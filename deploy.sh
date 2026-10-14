@@ -76,6 +76,10 @@ case "$ACTION" in
 esac
 
 mkdir -p "$DATA_DIR/projects" "$LABEL_MODELS_DIR"
+# 用 sudo 运行时目录会是 root 的，容器里的普通用户写不进去，交还给 LABEL_UID。
+if [ "$(id -u)" = 0 ]; then
+  chown "$(envget LABEL_UID):$(envget LABEL_GID)" "$DATA_DIR" "$DATA_DIR/projects" "$LABEL_MODELS_DIR"
+fi
 if [ -n "$WITH_VLM" ]; then
   [ -n "${VLM_MODEL_DIR:-}" ] || die "填了 VLM_MODEL，还要填模型所在目录 VLM_MODEL_DIR"
   [ -f "$VLM_MODEL_DIR/$VLM_MODEL" ] || die "找不到大模型文件 $VLM_MODEL_DIR/$VLM_MODEL"
