@@ -4,7 +4,7 @@
 # 一般直接用 ./deploy.sh，它会自动判断。
 # 镜像里只有代码；模型权重、模型路径、大模型接口地址都在运行时通过 .env 和挂载目录提供。
 # CPU 版镜像不带 torch，只有网页服务和 SAM（CPU，ONNX）。
-name: label-web
+name: vismeta
 
 services:
   web:
@@ -19,7 +19,7 @@ services:
         no_proxy: ${BUILD_NO_PROXY:-}
         PIP_INDEX: ${PIP_INDEX:-https://pypi.org/simple}
         APT_MIRROR: ${APT_MIRROR:-}
-    image: label-web:cpu
+    image: vismeta:cpu
     user: "${LABEL_UID:-0}:${LABEL_GID:-0}"
     ports:
       - "${LABEL_PORT:-8088}:8088"

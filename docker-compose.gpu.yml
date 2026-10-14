@@ -10,7 +10,7 @@ services:
         TORCH_INDEX: ${TORCH_INDEX_GPU:-https://download.pytorch.org/whl/cu124}
         CUDA_ARCHS: ${CUDA_ARCHS:-75;80;86;89;90}
         CUDA_APT_REPO: ${CUDA_APT_REPO:-https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64}
-    image: label-web:gpu
+    image: vismeta:gpu
     runtime: nvidia
     environment:
       LABEL_DEVICE: cuda
@@ -19,7 +19,7 @@ services:
 
   vlm:
     profiles: ["vlm"]
-    image: label-web:gpu
+    image: vismeta:gpu
     pull_policy: never
     runtime: nvidia
     entrypoint: ["/bin/sh", "-c"]

@@ -7,7 +7,7 @@
 | 适合 | 没有 N 卡，或只做手画框、审核文字 | 有 NVIDIA 显卡 |
 | 分割模型 | SAM（CPU，ONNX），点一下约 4 秒 | SAM3（GPU，点选 / 框选 / 文字，约 0.5 秒）+ SAM（CPU） |
 | 多模态大模型 | 不带；可在网页「大模型设置」或 `VLM_URL` 接外部 OpenAI 兼容服务 | 可选附带 llama.cpp 本地大模型（Qwen3-VL-8B Q4 一张图约 0.5–1 秒），也可接外部服务 |
-| 镜像 | `label-web:cpu`，不含 torch | `label-web:gpu` 一个镜像，标注服务和大模型容器共用 |
+| 镜像 | `vismeta:cpu`，不含 torch | `vismeta:gpu` 一个镜像，标注服务和大模型容器共用 |
 
 镜像按需精简：CPU 版不装 torch；GPU 版删掉了 SAM3 推理用不到的 CUDA 库（cuSOLVER、cuDNN 的 adv/ops/cnn 子库、头文件等），llama-server 从源码编译后放进同一个镜像，直接用 torch 自带的 CUDA 运行库，不再单独下载 llama.cpp 官方镜像。
 
