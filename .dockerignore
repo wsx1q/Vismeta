@@ -1,0 +1,12 @@
+data/
+__pycache__/
+*.pyc
+.env
+.git/
+*.bak*
+*.log
+export_sam_quant.py
+vlm_server.py
+start_vlm_gpu.sh
+docs/
+README.md

@@ -1,0 +1,2550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>服务器标注</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #121418; --bg2: #161b22; --panel: #1c2128; --input: #0e1116; --canvas: #0b0d11;
+    --line: #2c333d; --line2: #3a4250; --hover: #243044;
+    --text: #e8eaed; --muted: #9aa3ad;
+    --blue: #1f6feb; --link: #79c0ff; --green: #3fb950; --green2: #7ee787; --yellow: #e3b341; --red: #ff7b72;
+    --left: clamp(200px, 20vw, 280px); --right: clamp(300px, 30vw, 440px);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; overflow: hidden; display: grid; grid-template-rows: auto 1fr; background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif; }
+  select, input[type="text"], input[type="number"], input[type="password"], textarea { background: var(--input); color: inherit; border: 1px solid var(--line2); border-radius: 6px; padding: 5px 8px; font: inherit; }
+  textarea { resize: vertical; }
+  button { background: #2a3340; color: inherit; border: 1px solid #3d4858; border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; white-space: nowrap; }
+  button:hover:not(:disabled) { border-color: #58677d; }
+  button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  button.ghost { background: transparent; }
+  button.sm { padding: 2px 8px; font-size: 12px; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.on { color: var(--yellow); border-color: var(--yellow); }
+  .grow { flex: 1; }
+  .muted { color: var(--muted); }
+  .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 2px; }
+  .empty { color: var(--muted); padding: 10px 12px; font-size: 12px; }
+
+  /* 顶栏 */
+  #top { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0; }
+  #top .brand { font-weight: 700; }
+  #proj-name { font-weight: 600; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #top label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 13px; cursor: pointer; }
+
+  /* 下拉菜单 */
+  .pick { position: relative; display: inline-block; }
+  .pick > button.caret { padding-right: 24px; position: relative; text-align: left; }
+  .pick > button.caret::after { content: ""; position: absolute; right: 9px; top: 50%; margin-top: -2px; border: 4px solid transparent; border-top-color: var(--muted); }
+  .pick-menu { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; min-width: 100%; margin: 0; padding: 4px; list-style: none; background: var(--panel); border: 1px solid var(--line2); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  .pick-menu.right { left: auto; right: 0; }
+  .pick-menu[hidden] { display: none; }
+  .pick-menu button { display: flex; align-items: center; justify-content: space-between; gap: 18px; width: 100%; text-align: left; background: transparent; border: 0; border-radius: 4px; }
+  .pick-menu button:hover, .pick-menu button.on { background: var(--hover); }
+  .pick-menu .tick { width: 1em; text-align: right; color: var(--green); font-weight: 700; }
+  .pick-menu button:not(.on) .tick { visibility: hidden; }
+
+  /* 三栏 */
+  main { display: grid; grid-template-columns: var(--left) 5px minmax(0, 1fr) 5px var(--right); min-height: 0; min-width: 0; overflow: hidden; }
+  .gutter { cursor: col-resize; background: var(--line); }
+  .gutter:hover, .gutter.drag { background: var(--blue); }
+  aside { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; background: var(--bg); }
+
+  /* 左栏 */
+  .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
+  .filters input { grid-column: 1 / -1; }
+  .filters select { font-size: 12px; padding: 4px 6px; }
+  .genbar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  #gen-progress { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #gen-bar { height: 3px; background: var(--line); }
+  #gen-bar span { display: block; height: 100%; width: 0; background: var(--blue); transition: width .3s; }
+  #list { overflow: auto; flex: 1; }
+  .item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #1d222a; }
+  .item:hover { background: #1a2029; }
+  .item.active { background: var(--hover); }
+  .item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item.saved .nm { color: var(--green2); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #3a4250; flex-shrink: 0; }
+  .item.saved .dot { background: var(--green); }
+  .tstat { flex-shrink: 0; font-size: 11px; padding: 0 6px; border-radius: 99px; background: var(--line); color: var(--muted); }
+  .tstat.pending { background: #4a3a10; color: var(--yellow); }
+  .tstat.approved { background: #153b22; color: var(--green2); }
+  .tstat.rejected { background: #4b1c1c; color: var(--red); }
+  #meta { padding: 6px 10px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+
+  /* 中间 */
+  #view { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: auto 1fr auto; background: var(--canvas); }
+  #toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 10px; background: var(--bg2); border-bottom: 1px solid var(--line); }
+  .seg { display: inline-flex; border: 1px solid #3d4858; border-radius: 6px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; border-right: 1px solid #3d4858; }
+  .seg button:last-child { border-right: 0; }
+  .seg button.on { background: var(--blue); color: #fff; }
+  .field { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 13px; }
+  .field input[type="text"] { width: 100px; }
+  #confidence { width: 90px; }
+  #textwrap { display: none; align-items: center; gap: 6px; }
+  .text-field { position: relative; }
+  #recents { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; min-width: 100%; padding: 4px; background: var(--panel); border: 1px solid var(--line2); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  #recents[hidden] { display: none; }
+  .recent { display: flex; align-items: center; border-radius: 4px; }
+  .recent:hover { background: var(--hover); }
+  .recent .word { flex: 1; min-width: 0; background: transparent; border: 0; text-align: left; }
+  .recent .x { background: transparent; border: 0; padding: 2px 8px; color: var(--muted); }
+  .recent .x:hover { color: var(--red); }
+  #stage-wrap { min-width: 0; min-height: 0; overflow: auto; position: relative; }
+  #stage { position: relative; margin: auto; width: fit-content; }
+  #photo { display: block; max-width: none; max-height: none; }
+  #overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  #statusbar { display: flex; align-items: center; gap: 12px; padding: 4px 10px; background: var(--bg2); border-top: 1px solid var(--line); font-size: 12px; min-width: 0; }
+  #zoom { color: var(--muted); flex-shrink: 0; }
+  #op { flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hint { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  #center { display: none; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5; max-width: min(560px, 86%); padding: 10px 16px; border-radius: 8px; background: rgba(18,22,28,.94); font-size: 14px; text-align: center; pointer-events: none; white-space: pre-line; }
+  #center.show { display: block; }
+  #center.err { background: rgba(110,28,28,.95); pointer-events: auto; cursor: pointer; }
+  #center.busy { background: rgba(18,32,58,.95); }
+
+  /* 右栏 */
+  .tabs { display: flex; border-bottom: 1px solid var(--line); background: var(--panel); flex-shrink: 0; }
+  .tabs button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 8px; color: var(--muted); border-bottom: 2px solid transparent; }
+  .tabs button.on { color: var(--text); border-bottom-color: var(--blue); }
+  .tabs .count { display: inline-block; min-width: 18px; margin-left: 4px; padding: 0 5px; border-radius: 99px; background: var(--line); font-size: 11px; color: var(--muted); }
+  .tabs .count.warn { background: #4a3a10; color: var(--yellow); }
+  .tab { display: none; flex-direction: column; min-height: 0; flex: 1; }
+  .tab.on { display: flex; }
+  .sec-title { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 10px; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--bg2); border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .add { display: flex; gap: 6px; padding: 8px; flex-shrink: 0; }
+  .add input { flex: 1; min-width: 0; }
+  #label-names { max-height: 38%; overflow: auto; flex-shrink: 0; border-bottom: 1px solid var(--line); }
+  #shape-list { flex: 1; overflow: auto; }
+  .lab { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid #1d222a; }
+  .lab:hover { background: #1a2029; }
+  .lab.on { background: #3a2f14; }
+  .lab .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .lab .kind { color: var(--muted); font-size: 12px; margin-left: 4px; }
+  .lab.locked .name { color: var(--yellow); }
+  .lab button { padding: 1px 6px; font-size: 12px; }
+  .lab input { flex: 1; min-width: 0; padding: 3px 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+  .vlm-run { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .vlm-run .row { display: flex; gap: 6px; align-items: center; }
+  .vlm-run select { flex: 1; min-width: 0; }
+  .vlm-run .info { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #text-list { flex: 1; overflow: auto; }
+  .qa { padding: 8px 10px; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; display: flex; flex-direction: column; gap: 6px; }
+  .qa.approved { border-left-color: var(--green); }
+  .qa.rejected { border-left-color: var(--red); }
+  .qa.rejected textarea { opacity: .75; }
+  .qa.pending { border-left-color: var(--yellow); }
+  .qa .head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .qa .head .src { color: var(--link); }
+  .qa .head .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qa label { font-size: 11px; color: var(--muted); margin-bottom: -3px; }
+  .qa textarea { width: 100%; min-height: 32px; overflow: hidden; resize: none; font-size: 13px; line-height: 1.5; }
+  .qa .ops { display: flex; gap: 6px; flex-wrap: wrap; }
+  .qa .ops button.ok { border-color: var(--green); color: var(--green2); }
+  .qa .ops button.ok.on { background: #153b22; }
+  .qa .ops button.no { border-color: var(--red); color: var(--red); }
+  .qa .ops button.no.on { background: #4b1c1c; }
+  .qa .draft { font-size: 12px; color: var(--muted); background: var(--bg2); padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+  .qa .draft b { color: var(--link); font-weight: 400; }
+  .vlm-foot { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--line); background: var(--panel); flex-shrink: 0; }
+  .vlm-foot .grow { font-size: 12px; color: var(--muted); align-self: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* 项目页 */
+  #projects { display: none; position: fixed; inset: 0; z-index: 20; overflow: auto; padding: 28px; background: var(--bg); }
+  #projects.show { display: block; }
+  .projects-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+  .projects-head h2 { margin: 0; font-size: 20px; }
+  .projects-head form { display: flex; gap: 8px; }
+  .projects-head input { width: 220px; }
+  #project-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+  .project { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+  .project b { font-size: 16px; }
+  .project .stat { color: var(--muted); font-size: 13px; }
+  .project .bar { height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
+  .project .bar span { display: block; height: 100%; background: var(--green); }
+  .project .actions { display: flex; gap: 8px; }
+
+  /* 弹窗 */
+  .modal { display: none; position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.55); align-items: center; justify-content: center; padding: 16px; }
+  .modal.show { display: flex; }
+  .dialog { background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 16px 48px rgba(0,0,0,.5); display: flex; flex-direction: column; max-height: 100%; min-height: 0; width: 100%; }
+  .dialog > header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .dialog > header h3 { margin: 0; font-size: 16px; }
+  .dialog > footer { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); }
+  #pathbox .dialog { width: min(520px, 100%); }
+  #pathbox .body { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  #vlm-modal .dialog { width: min(1180px, 100%); height: min(900px, 100%); }
+  .vlm-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 340px minmax(0, 1fr); }
+  .vlm-col { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+  .vlm-col + .vlm-col { border-left: 1px solid var(--line); }
+  .vlm-col h4 { margin: 0; padding: 10px 14px 6px; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .vlm-col h4 .grow { flex: 1; }
+  .plist { margin: 0 10px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+  .plist .row { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .plist .row:last-child { border-bottom: 0; }
+  .plist .row:hover { background: #1a2029; }
+  .plist .row.on { background: var(--hover); }
+  .plist .row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .plist .tag { font-size: 11px; padding: 0 6px; border-radius: 99px; background: var(--line); color: var(--muted); flex-shrink: 0; }
+  .plist .tag.blue { background: #10294d; color: var(--link); }
+  .plist .tag.green { background: #153b22; color: var(--green2); }
+  .form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 10px 14px; }
+  .form .full { grid-column: 1 / -1; }
+  .form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  .form label.check { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: 13px; }
+  .form input, .form select, .form textarea { width: 100%; color: var(--text); }
+  .form textarea { min-height: 70px; font-size: 13px; }
+  .form .note { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .form code { background: var(--input); padding: 0 4px; border-radius: 4px; color: var(--link); cursor: pointer; }
+  .form .btns { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  #vt-out { margin: 0 14px 14px; padding: 10px; background: var(--input); border: 1px solid var(--line); border-radius: 6px; font: 12px/1.5 Consolas, monospace; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+  #vt-out:empty { display: none; }
+  #vlm-msg { font-size: 13px; }
+  #vlm-msg.err { color: var(--red); }
+  #vlm-msg.ok { color: var(--green2); }
+</style>
+</head>
+<body>
+<header id="top">
+  <button type="button" id="to-projects" title="返回项目列表">◂ 项目</button>
+  <span id="proj-name"></span>
+  <span class="sep"></span>
+  <span class="pick" id="import-pick">
+    <button type="button" class="caret" id="import-local">导入</button>
+    <ul class="pick-menu" hidden>
+      <li><button type="button" data-kind="files">本地图片</button></li>
+      <li><button type="button" data-kind="dir">本地文件夹</button></li>
+      <li><button type="button" data-kind="zip">本地压缩包</button></li>
+      <li><button type="button" data-kind="server">服务器路径…</button></li>
+    </ul>
+  </span>
+  <span class="pick" id="export-pick">
+    <button type="button" class="caret" id="export-btn">导出</button>
+    <ul class="pick-menu" hidden>
+      <li><button type="button" data-kind="vlm.jsonl">多模态问答 JSONL（已通过）</button></li>
+      <li><button type="button" data-kind="vlm.jsonl" data-all="1">多模态问答 JSONL（含待审）</button></li>
+      <li><button type="button" data-kind="yolo.zip">YOLO 标签（zip）</button></li>
+      <li><button type="button" data-kind="yolo.zip" data-images="1">YOLO 标签 + 图片（zip）</button></li>
+      <li><button type="button" data-kind="labelme.zip">labelme JSON（zip）</button></li>
+    </ul>
+  </span>
+  <input id="import-files" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" multiple hidden/>
+  <input id="import-dir" type="file" webkitdirectory directory multiple hidden/>
+  <input id="import-zip" type="file" accept=".zip,.tar,.tgz,.tar.gz,.tar.bz2,.tar.xz,application/zip,application/x-tar,application/gzip" multiple hidden/>
+  <span class="grow"></span>
+  <button type="button" id="prev" title="A">上一张</button>
+  <button type="button" id="next" title="D">下一张</button>
+  <button type="button" id="save" class="primary" title="S / Ctrl+S：保存框和文字">保存</button>
+  <span class="sep"></span>
+  <label title="切换图片时自动保存框和文字"><input type="checkbox" id="autosave" checked/> 切图自动保存</label>
+  <button type="button" id="open-vlm">大模型设置</button>
+</header>
+<main>
+  <aside id="left">
+    <div class="filters">
+      <input id="q" type="text" placeholder="搜索文件名"/>
+      <select id="sfilter" title="按标注状态筛选">
+        <option value="">标注：全部</option>
+        <option value="yes">已标注</option>
+        <option value="no">未标注</option>
+      </select>
+      <select id="tfilter" title="按大模型文字状态筛选">
+        <option value="">文字：全部</option>
+        <option value="none">没生成</option>
+        <option value="pending">待审</option>
+        <option value="approved">已通过</option>
+        <option value="rejected">已打回</option>
+      </select>
+    </div>
+    <div class="genbar">
+      <span id="gen-progress"></span>
+      <button type="button" class="sm" id="gen-all" title="用勾选了「参与批量生成」的提示词，给还没有文字或被打回的图片在后台生成">批量生成</button>
+    </div>
+    <div id="gen-bar"><span></span></div>
+    <div id="list"></div>
+    <div id="meta"></div>
+  </aside>
+  <div class="gutter" data-side="left"></div>
+  <section id="view">
+    <div id="toolbar">
+      <span class="seg" id="modes">
+        <button type="button" data-mode="point" class="on" title="模型点选：左键加点，右键减点">点选</button>
+        <button type="button" data-mode="box" title="模型框选：拖一个框让模型分割">框选</button>
+        <button type="button" data-mode="hand-rect" title="手画矩形">矩形</button>
+        <button type="button" data-mode="hand-poly" title="手画多边形">多边形</button>
+        <button type="button" data-mode="pan" title="H">移动</button>
+      </span>
+      <span class="pick" id="model-pick">
+        <button type="button" class="caret" id="model" value="">模型</button>
+        <ul class="pick-menu" hidden></ul>
+      </span>
+      <span class="pick">
+        <button type="button" class="caret" id="output" value="mask">掩膜</button>
+        <ul class="pick-menu" hidden>
+          <li><button type="button" data-value="mask">掩膜<span class="tick">✓</span></button></li>
+          <li><button type="button" data-value="box">框<span class="tick">✓</span></button></li>
+        </ul>
+      </span>
+      <span class="field" id="confwrap" title="置信度">阈值 <input id="confidence" type="range" min="0" max="1" step="0.05" value="0.4"/> <span id="confv">0.40</span></span>
+      <span id="textwrap">
+        <span class="text-field">
+          <input id="text" type="text" placeholder="文字提示，如：锥桶" style="width:140px"/>
+          <div id="recents" hidden></div>
+        </span>
+        <button type="button" id="textgo">按文字分割</button>
+      </span>
+      <span class="field">标签 <input id="label" type="text" list="label-options" value="目标"/></span>
+      <datalist id="label-options"></datalist>
+      <span class="grow"></span>
+      <button type="button" id="undo" title="Ctrl+Z">撤销</button>
+      <button type="button" id="clear" title="C">清除</button>
+      <button type="button" id="commit" title="F：把红色候选加入标注">确认</button>
+    </div>
+    <div id="stage-wrap">
+      <div id="stage">
+        <img id="photo" alt=""/>
+        <canvas id="overlay"></canvas>
+      </div>
+    </div>
+    <div id="statusbar">
+      <span id="zoom">100%</span>
+      <span id="op">选择左侧一张图片</span>
+      <span id="hint"></span>
+    </div>
+    <div id="center"></div>
+  </section>
+  <div class="gutter" data-side="right"></div>
+  <aside id="right">
+    <nav class="tabs">
+      <button type="button" data-tab="cv" class="on">标注<span class="count" id="cv-count">0</span></button>
+      <button type="button" data-tab="vlm">多模态<span class="count" id="vlm-count">0</span></button>
+    </nav>
+    <div class="tab on" id="tab-cv">
+      <div class="sec-title">标签</div>
+      <div class="add">
+        <input id="new-label" type="text" placeholder="新标签，回车添加"/>
+        <button id="add-label" type="button">添加</button>
+      </div>
+      <div id="label-names"></div>
+      <div class="sec-title">本图目标 <span class="muted" style="font-weight:400">双击画布上的目标可编辑</span></div>
+      <div id="shape-list"></div>
+    </div>
+    <div class="tab" id="tab-vlm">
+      <div class="vlm-run">
+        <div class="row">
+          <select id="run-prompt" title="选择提示词"></select>
+          <button type="button" id="run-one" class="primary" title="用这条提示词跑当前图片">运行</button>
+          <button type="button" id="run-batch-one" title="用所有「参与批量生成」的提示词跑当前图片">全部</button>
+        </div>
+        <div class="info" id="run-info"></div>
+      </div>
+      <div id="text-list"></div>
+      <div class="vlm-foot">
+        <button type="button" id="text-add" title="手写一条问答">手写</button>
+        <button type="button" id="approve-all" title="Y：全部通过、保存并下一张">全部通过</button>
+        <span class="grow" id="text-src"></span>
+        <button type="button" id="text-save" class="primary">保存文字</button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<div id="projects">
+  <div class="projects-head">
+    <h2>项目</h2>
+    <form id="new-project">
+      <input id="project-name" type="text" maxlength="40" placeholder="新项目名称"/>
+      <button type="submit" class="primary">新建</button>
+    </form>
+  </div>
+  <div id="project-list"></div>
+</div>
+
+<div class="modal" id="pathbox">
+  <div class="dialog">
+    <header><h3>从服务器路径导入</h3></header>
+    <div class="body">
+      <span class="muted">把服务器上的图片复制进当前项目。可以填一个图片文件，或一个文件夹（会递归查找）。</span>
+      <input id="server-path" type="text" placeholder="/data/images"/>
+    </div>
+    <footer><span class="grow"></span><button type="button" id="path-cancel">取消</button><button type="button" id="path-ok" class="primary">导入</button></footer>
+  </div>
+</div>
+
+<div class="modal" id="vlm-modal">
+  <div class="dialog">
+    <header><h3>大模型设置</h3><span class="muted" style="font-size:12px">接口对所有项目共用；提示词只属于当前项目</span><span class="grow"></span><button type="button" class="ghost" id="vlm-close">✕</button></header>
+    <div class="vlm-body">
+      <div class="vlm-col">
+        <h4><span class="grow">接口（OpenAI 兼容）</span><button type="button" class="sm" id="pv-add">新增</button></h4>
+        <div class="plist" id="pv-list"></div>
+        <div class="form" id="pv-form">
+          <label class="full">名称<input id="pv-name" type="text"/></label>
+          <label class="full">接口地址（到 /v1 为止）<input id="pv-url" type="text" placeholder="http://127.0.0.1:8091/v1"/></label>
+          <label class="full">模型名<input id="pv-model" type="text" list="pv-models"/><datalist id="pv-models"></datalist></label>
+          <label class="full">API Key<input id="pv-key" type="password" placeholder="本地服务可留空" autocomplete="off"/></label>
+          <label>温度<input id="pv-temperature" type="number" min="0" max="2" step="0.05"/></label>
+          <label>最大输出 tokens<input id="pv-max_tokens" type="number" min="16" step="16"/></label>
+          <label>超时（秒）<input id="pv-timeout" type="number" min="5"/></label>
+          <label>图片长边（像素）<input id="pv-image_side" type="number" min="128" step="64"/></label>
+          <div class="full btns">
+            <button type="button" id="pv-test">测试连接</button>
+            <button type="button" id="pv-default">设为默认</button>
+            <span class="grow"></span>
+            <button type="button" id="pv-del">删除</button>
+          </div>
+          <div class="full note" id="pv-test-out"></div>
+          <label class="full">当前项目使用
+            <select id="proj-provider"></select>
+          </label>
+        </div>
+      </div>
+      <div class="vlm-col">
+        <h4><span class="grow">当前项目的提示词</span>
+          <span class="pick">
+            <button type="button" class="sm caret" id="pr-add">新增</button>
+            <ul class="pick-menu right" hidden id="pr-templates"></ul>
+          </span>
+        </h4>
+        <div class="plist" id="pr-list"></div>
+        <div class="form" id="pr-form">
+          <label>名称<input id="pr-name" type="text"/></label>
+          <label>类型（导出时的 kind）<input id="pr-kind" type="text"/></label>
+          <label>输出格式
+            <select id="pr-format">
+              <option value="text">整段文字：回答原样作为答案</option>
+              <option value="json">JSON 问答：[{question, answer}]</option>
+              <option value="boxes">检测框：[{label, bbox_2d}] → 候选框</option>
+            </select>
+          </label>
+          <label id="pr-coords-wrap">框坐标
+            <select id="pr-coords">
+              <option value="qwen1000">0–1000 相对坐标（Qwen-VL）</option>
+              <option value="norm">0–1 归一化</option>
+              <option value="pixel">发送图片的像素坐标</option>
+            </select>
+          </label>
+          <label>最大输出 tokens（0 = 用接口设置）<input id="pr-max_tokens" type="number" min="0" step="16"/></label>
+          <label class="check" id="pr-batch-wrap"><input id="pr-batch" type="checkbox"/> 参与批量生成</label>
+          <label class="full">System 提示（可留空）<textarea id="pr-system" rows="2"></textarea></label>
+          <label class="full">问题 / 指令<textarea id="pr-question" rows="5"></textarea></label>
+          <div class="full note">可用变量（点击插入）：<code>{labels}</code> 项目标签 · <code>{shapes}</code> 本图已标注目标（标签 + 像素框） · <code>{filename}</code> · <code>{width}</code> · <code>{height}</code>。<br/>
+            「整段文字」格式会把问题原样存为问题、模型回答存为答案；微调过的模型（如这里的 LoRA）请保持训练时的问题不变。</div>
+          <div class="full btns">
+            <button type="button" id="pr-try" class="primary">在当前图片上试运行</button>
+            <button type="button" id="pr-up">上移</button>
+            <button type="button" id="pr-dup">复制</button>
+            <span class="grow"></span>
+            <button type="button" id="pr-del">删除</button>
+          </div>
+        </div>
+        <pre id="vt-out"></pre>
+      </div>
+    </div>
+    <footer><span id="vlm-msg"></span><span class="grow"></span><button type="button" id="vlm-cancel">取消</button><button type="button" id="vlm-save" class="primary">保存设置</button></footer>
+  </div>
+</div>
+
+<script>
+let projectId = "";
+let projectName = "";
+const rawFetch = window.fetch.bind(window);
+window.fetch = (url, opts) => {
+  const next = opts ? {...opts} : {};
+  if (projectId && String(url).startsWith("/api/")) {
+    const headers = new Headers(next.headers || {});
+    if (!headers.has("X-Project")) headers.set("X-Project", projectId);
+    next.headers = headers;
+  }
+  return rawFetch(url, next);
+};
+const $ = id => document.getElementById(id);
+function postJSON(url, body) {
+  return fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+}
+function store(key, value) { try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch (err) { return null; } }
+
+const listEl = $("list");
+const photo = $("photo");
+const overlay = $("overlay");
+const stageWrap = $("stage-wrap");
+const ctx = overlay.getContext("2d");
+const centerEl = $("center");
+const labelNamesEl = $("label-names");
+const shapeListEl = $("shape-list");
+let items = [];
+let index = -1;
+let listStats = null;
+let points = [];
+let draftBox = null;
+let drag = null;
+let polyDraft = [];
+let polyHover = null;
+let current = {polygons: [], boxes: [], boxLabels: []};
+let saved = [];
+let savedSnapshot = "[]";
+let labels = [];
+let selectedLabel = "目标";
+let selectedShapeId = null;
+let selectedVertex = null;
+let editDrag = null;
+let pendingSelect = null;
+let promptTimer = null;
+let editingLabel = null;
+let editingShapeId = null;
+let history = [];
+let busy = false;
+let seq = 0;
+let shapeSeq = 1;
+let viewScale = 1;
+let modeName = "point";
+let modeBeforePan = "point";
+let panDrag = null;
+
+function setStatus(text) { $("op").textContent = text || ""; $("op").title = text || ""; }
+function toastCenter(text, kind) {
+  centerEl.textContent = text || "";
+  centerEl.className = text ? ("show" + (kind ? " " + kind : "")) : "";
+}
+centerEl.onclick = () => toastCenter("");
+
+// ---------- 可拖动的侧栏 ----------
+(() => {
+  const root = document.documentElement;
+  for (const side of ["left", "right"]) {
+    const saved = Number(store("label-width:" + side));
+    if (saved) root.style.setProperty("--" + side, saved + "px");
+  }
+  document.querySelectorAll(".gutter").forEach(gutter => {
+    gutter.addEventListener("mousedown", event => {
+      event.preventDefault();
+      const side = gutter.dataset.side;
+      const startX = event.clientX;
+      const start = $(side).getBoundingClientRect().width;
+      gutter.classList.add("drag");
+      const move = e => {
+        const delta = side === "left" ? e.clientX - startX : startX - e.clientX;
+        const width = Math.round(Math.min(window.innerWidth * 0.5, Math.max(180, start + delta)));
+        root.style.setProperty("--" + side, width + "px");
+        layout();
+      };
+      const up = () => {
+        gutter.classList.remove("drag");
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+        store("label-width:" + side, String(Math.round($(side).getBoundingClientRect().width)));
+        autosizeAll();
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
+  });
+})();
+
+// ---------- 右栏标签页 ----------
+function showTab(name) {
+  document.querySelectorAll(".tabs button").forEach(btn => btn.classList.toggle("on", btn.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("on", tab.id === "tab-" + name));
+  store("label-tab", name);
+  if (name === "vlm") autosizeAll();
+}
+document.querySelector(".tabs").onclick = event => {
+  const btn = event.target.closest("button");
+  if (btn) showTab(btn.dataset.tab);
+};
+showTab(store("label-tab") || "cv");
+
+// ---------- 下拉菜单 ----------
+function closeMenus(except) {
+  document.querySelectorAll(".pick-menu").forEach(node => { if (node !== except) node.hidden = true; });
+}
+document.addEventListener("mousedown", event => {
+  if (!event.target.closest(".pick")) closeMenus();
+});
+function bindPick(id) {
+  const btn = $(id);
+  const menu = btn.nextElementSibling;
+  const paint = () => {
+    const cur = menu.querySelector('[data-value="' + CSS.escape(btn.value) + '"]');
+    if (cur) btn.textContent = cur.childNodes[0].textContent;
+    menu.querySelectorAll("button").forEach(item => item.classList.toggle("on", item.dataset.value === btn.value));
+  };
+  menu.querySelectorAll("button").forEach(item => {
+    item.onclick = () => {
+      const next = item.dataset.value;
+      menu.hidden = true;
+      if (next === btn.value) return;
+      btn.value = next;
+      paint();
+      btn.dispatchEvent(new Event("change"));
+    };
+  });
+  btn.onclick = () => {
+    if (btn.disabled) return;
+    const open = menu.hidden;
+    closeMenus(menu);
+    menu.hidden = !open;
+    paint();
+  };
+  paint();
+}
+function bindMenu(btnId, handler) {
+  const btn = $(btnId);
+  const menu = btn.nextElementSibling;
+  btn.onclick = () => {
+    if (btn.disabled) return;
+    const open = menu.hidden;
+    closeMenus(menu);
+    menu.hidden = !open;
+  };
+  menu.onclick = event => {
+    const item = event.target.closest("button");
+    if (!item) return;
+    menu.hidden = true;
+    handler(item);
+  };
+}
+
+// ---------- 分割模型 ----------
+let modelCatalog = [];
+function modelName() { return $("model").value; }
+function currentModel() { return modelCatalog.find(item => item.id === modelName()) || null; }
+function promptMode() { return modeName; }
+function setMode(name) {
+  if (name !== "pan") modeBeforePan = name;
+  modeName = name;
+  panDrag = null;
+  clearTimeout(promptTimer);
+  promptTimer = null;
+  document.querySelectorAll("#modes button").forEach(btn => btn.classList.toggle("on", btn.dataset.mode === name));
+  points = [];
+  draftBox = null;
+  polyDraft = [];
+  polyHover = null;
+  current = {polygons: [], boxes: [], boxLabels: []};
+  draw();
+  syncHint();
+  overlay.style.cursor = name === "pan" ? "grab" : "crosshair";
+  stageWrap.style.cursor = name === "pan" ? "grab" : "";
+}
+function outputMode() { return $("output").value; }
+const HOTKEYS = "H 移动 · A/D 上/下一张 · S 保存 · C 清除 · F 确认 · Y 全部通过并下一张 · Ctrl+Z 撤销 · Ctrl+滚轮缩放 · 双击目标编辑 · Delete 删除";
+function typing() {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable || !!el.closest(".pick");
+}
+function handMode() { return promptMode() === "hand-rect" || promptMode() === "hand-poly"; }
+function syncHint() {
+  const spec = currentModel();
+  const mode = promptMode();
+  const modelMode = !handMode() && mode !== "pan";
+  const canText = spec && spec.prompts.includes("text");
+  $("output").disabled = !modelMode;
+  $("model").disabled = !modelMode;
+  $("confidence").disabled = !modelMode;
+  $("textwrap").style.display = canText && modelMode ? "inline-flex" : "none";
+  let lead = (spec && spec.hint) || "先选一个模型。";
+  if (mode === "hand-rect") lead = "手画矩形：按住左键拖出框，松开即加上，用的是当前标签。";
+  if (mode === "hand-poly") lead = "手画多边形：左键逐个下点，靠近起点、双击或 Enter 闭合；右键去掉上一个点，Esc 取消。";
+  if (mode === "pan") lead = "移动：按住左键拖动查看放大后的图片。";
+  $("hint").textContent = lead + "  " + HOTKEYS;
+  $("hint").title = lead + "\n" + HOTKEYS;
+}
+async function loadModels() {
+  const data = await (await fetch("/api/models")).json();
+  modelCatalog = data.models || [];
+  const menu = $("model").nextElementSibling;
+  menu.innerHTML = "";
+  for (const item of modelCatalog) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.value = item.id;
+    button.textContent = item.name + (item.ready ? "" : "（缺权重）");
+    const tick = document.createElement("span");
+    tick.className = "tick";
+    tick.textContent = "✓";
+    button.appendChild(tick);
+    li.appendChild(button);
+    menu.appendChild(li);
+  }
+  const preferred = modelCatalog.find(item => item.id === "sam3" && item.ready) || modelCatalog.find(item => item.ready) || modelCatalog[0];
+  if (preferred) $("model").value = preferred.id;
+  bindPick("model");
+  applyConfidence();
+  syncHint();
+}
+function applyConfidence() {
+  const spec = currentModel();
+  if (!spec) return;
+  $("confidence").value = spec.confidence.default;
+  $("confv").textContent = Number(spec.confidence.default).toFixed(2);
+}
+$("confidence").oninput = () => { $("confv").textContent = Number($("confidence").value).toFixed(2); };
+bindPick("output");
+$("model").onchange = () => { applyConfidence(); syncHint(); preload(); };
+$("modes").onclick = event => {
+  const btn = event.target.closest("button");
+  if (btn) setMode(btn.dataset.mode);
+};
+$("output").onchange = () => {
+  if (handMode() || promptMode() === "pan") return;
+  if (points.length || draftBox || $("text").value.trim()) segment();
+};
+$("label").onchange = () => {
+  const name = $("label").value.trim();
+  if (!name) return;
+  ensureLabel(name);
+  selectedLabel = name;
+  selectedShapeId = null;
+  renderLabels();
+  draw();
+};
+async function preload() {
+  const spec = currentModel();
+  if (!spec) return;
+  setStatus("正在加载 " + spec.name + " …");
+  try {
+    const data = await (await postJSON("/api/load", {model: modelName()})).json();
+    if (data.ok) setStatus(spec.name + " 已就绪");
+    else toastCenter("加载失败：" + data.error, "err");
+  } catch (err) {
+    toastCenter("加载失败：" + err, "err");
+  }
+}
+
+// ---------- 标签 ----------
+const PALETTE = ["#58a6ff", "#3fb950", "#d29922", "#bc8cff", "#ff7b72", "#39c5cf", "#f778ba", "#a5d6ff", "#7ee787", "#ffa657"];
+function labelColor(name) {
+  const pos = labels.findIndex(item => item.name === name);
+  if (pos >= 0) return PALETTE[pos % PALETTE.length];
+  let h = 0;
+  for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + a + ")";
+}
+async function loadLabels() {
+  const data = await (await fetch("/api/labels")).json();
+  labels = data.labels || [];
+  if (data.fresh && !labels.length) {
+    labels = [{name: "目标", locked: false}];
+    await persistLabels();
+  }
+  if (!labels.some(item => item.name === selectedLabel)) selectedLabel = labels.length ? labels[0].name : "目标";
+  $("label").value = selectedLabel;
+  renderLabels();
+}
+let labelQueue = Promise.resolve();
+function persistLabels() {
+  const payload = labels.map(item => ({name: item.name, locked: !!item.locked}));
+  const key = list => list.map(item => item.name + (item.locked ? "1" : "0")).join("\n");
+  labelQueue = labelQueue.then(async () => {
+    const data = await (await postJSON("/api/labels", {labels: payload})).json();
+    if (key(labels) !== key(payload)) return;
+    labels = data.labels || labels;
+    renderLabels();
+  }).catch(err => toastCenter("标签保存失败：" + err, "err"));
+  return labelQueue;
+}
+function ensureLabel(name, persist) {
+  if (!name || labels.some(item => item.name === name)) return false;
+  labels.push({name, locked: false});
+  if (persist !== false) persistLabels();
+  return true;
+}
+function rowButton(text, onclick, opts) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = text;
+  btn.onclick = onclick;
+  if (opts && opts.disabled) btn.disabled = true;
+  if (opts && opts.className) btn.className = opts.className;
+  return btn;
+}
+function editRow(container, value, finish, cancel) {
+  const row = document.createElement("div");
+  row.className = "lab";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value;
+  input.onkeydown = event => {
+    if (event.key === "Enter") finish(input.value);
+    if (event.key === "Escape") cancel();
+  };
+  input.onblur = () => finish(input.value);
+  row.appendChild(input);
+  container.appendChild(row);
+  input.focus();
+  input.select();
+}
+function renderLabels() {
+  labelNamesEl.innerHTML = "";
+  $("label-options").innerHTML = "";
+  labels.forEach(item => {
+    const opt = document.createElement("option");
+    opt.value = item.name;
+    $("label-options").appendChild(opt);
+  });
+  if (!labels.length) {
+    labelNamesEl.innerHTML = '<div class="empty">还没有标签</div>';
+    return;
+  }
+  labels.forEach(item => {
+    if (editingLabel === item.name) {
+      editRow(labelNamesEl, item.name, raw => finishEditLabel(item.name, raw), () => { editingLabel = null; renderLabels(); });
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "lab" + (item.name === selectedLabel ? " on" : "") + (item.locked ? " locked" : "");
+    const sw = document.createElement("span");
+    sw.className = "swatch";
+    sw.style.background = labelColor(item.name);
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = item.name;
+    name.title = item.name;
+    name.onclick = () => selectLabel(item.name);
+    const used = saved.filter(shape => shape.label === item.name).length;
+    if (used) {
+      const k = document.createElement("span");
+      k.className = "kind";
+      k.textContent = "×" + used;
+      name.appendChild(k);
+    }
+    row.append(sw, name,
+      rowButton("改名", () => { editingLabel = item.name; renderLabels(); }, {disabled: item.locked}),
+      rowButton("删除", () => deleteLabel(item.name), {disabled: item.locked}),
+      rowButton(item.locked ? "解锁" : "锁定", () => toggleLabelLock(item.name), {className: item.locked ? "on" : ""}));
+    labelNamesEl.appendChild(row);
+  });
+}
+function selectLabel(name) {
+  selectedLabel = name;
+  selectedShapeId = null;
+  $("label").value = name;
+  renderLabels();
+  renderShapes();
+  draw();
+}
+function finishEditLabel(oldName, raw) {
+  if (editingLabel !== oldName) return;
+  editingLabel = null;
+  const name = raw.trim();
+  const item = labels.find(entry => entry.name === oldName);
+  if (!item || item.locked || !name || name === oldName) { renderLabels(); return; }
+  if (labels.find(entry => entry.name === name)) labels = labels.filter(entry => entry.name !== oldName);
+  else item.name = name;
+  saved.forEach(shape => { if (shape.label === oldName) shape.label = name; });
+  if (selectedLabel === oldName) {
+    selectedLabel = name;
+    $("label").value = name;
+  }
+  renderShapes();
+  draw();
+  persistLabels();
+}
+function deleteLabel(name) {
+  const item = labels.find(entry => entry.name === name);
+  if (!item || item.locked) return;
+  labels = labels.filter(entry => entry.name !== name);
+  if (selectedLabel === name) {
+    selectedLabel = labels.length ? labels[0].name : "";
+    $("label").value = selectedLabel;
+    selectedShapeId = null;
+    draw();
+  }
+  renderLabels();
+  persistLabels();
+}
+function toggleLabelLock(name) {
+  const item = labels.find(entry => entry.name === name);
+  if (!item) return;
+  item.locked = !item.locked;
+  renderLabels();
+  persistLabels();
+}
+
+// ---------- 本图目标 ----------
+function hydrate(shapes) {
+  return (shapes || []).filter(shape => shape && shape.points).map(shape => ({
+    id: "s" + (shapeSeq++),
+    label: shape.label || "目标",
+    points: shape.points,
+    shape_type: shape.shape_type || "polygon",
+    locked: !!(shape.locked || (shape.flags && shape.flags.locked))
+  }));
+}
+function shapesKey() {
+  return JSON.stringify(saved.map(s => [s.label, s.shape_type, s.locked, s.points]));
+}
+function shapesDirty() { return index >= 0 && shapesKey() !== savedSnapshot; }
+function renderShapes() {
+  shapeListEl.innerHTML = "";
+  $("cv-count").textContent = saved.length;
+  if (!saved.length) {
+    shapeListEl.innerHTML = '<div class="empty">这张图还没有标注</div>';
+    renderLabels();
+    return;
+  }
+  saved.forEach((shape, n) => {
+    if (editingShapeId === shape.id) {
+      editRow(shapeListEl, shape.label, raw => finishEditShape(shape.id, raw), () => { editingShapeId = null; renderShapes(); });
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "lab" + (shape.id === selectedShapeId ? " on" : "") + (shape.locked ? " locked" : "");
+    const sw = document.createElement("span");
+    sw.className = "swatch";
+    sw.style.background = labelColor(shape.label);
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = (n + 1) + ". " + shape.label;
+    const kind = document.createElement("span");
+    kind.className = "kind";
+    kind.textContent = shape.shape_type === "rectangle" ? "框" : "多边形";
+    name.appendChild(kind);
+    name.onclick = () => selectShape(shape.id);
+    row.append(sw, name,
+      rowButton("改名", () => { editingShapeId = shape.id; renderShapes(); }, {disabled: shape.locked}),
+      rowButton("删除", () => deleteShape(shape.id), {disabled: shape.locked}),
+      rowButton(shape.locked ? "解锁" : "锁定", () => {
+        shape.locked = !shape.locked;
+        renderShapes();
+        draw();
+      }, {className: shape.locked ? "on" : ""}));
+    shapeListEl.appendChild(row);
+  });
+  renderLabels();
+}
+function selectShape(id) {
+  const shape = saved.find(item => item.id === id);
+  if (!shape) return;
+  selectedShapeId = id;
+  selectedVertex = null;
+  selectedLabel = shape.label;
+  $("label").value = shape.label;
+  renderShapes();
+  draw();
+}
+function finishEditShape(id, raw) {
+  if (editingShapeId !== id) return;
+  editingShapeId = null;
+  const shape = saved.find(item => item.id === id);
+  const name = raw.trim();
+  if (!shape || shape.locked || !name || name === shape.label) { renderShapes(); return; }
+  history.push({type: "edit", id, label: shape.label});
+  shape.label = name;
+  ensureLabel(name);
+  selectedLabel = name;
+  $("label").value = name;
+  renderShapes();
+  draw();
+  setStatus("已改成 " + name);
+}
+function deleteShape(id) {
+  const pos = saved.findIndex(item => item.id === id);
+  if (pos < 0 || saved[pos].locked) return;
+  const [shape] = saved.splice(pos, 1);
+  history.push({type: "delete", shape});
+  if (selectedShapeId === id) {
+    selectedShapeId = null;
+    selectedVertex = null;
+  }
+  renderShapes();
+  draw();
+  setStatus("已删除");
+}
+
+// ---------- 图片列表 ----------
+const TEXT_WORDS = {none: "无", pending: "待审", approved: "通过", rejected: "打回"};
+function textBadge(state) {
+  const tag = document.createElement("span");
+  tag.className = "tstat " + (state || "none");
+  tag.textContent = TEXT_WORDS[state] || "无";
+  return tag;
+}
+function paintMeta() {
+  if (!listStats) { $("meta").textContent = ""; return; }
+  const t = listStats.texts || {};
+  $("meta").textContent = "共 " + listStats.total + " 张 · 已标注 " + listStats.done
+    + " · 文字待审 " + (t.pending || 0) + " / 通过 " + (t.approved || 0) + " / 打回 " + (t.rejected || 0);
+}
+function listRow(item, i) {
+  const div = document.createElement("div");
+  div.className = "item" + (item.saved ? " saved" : "") + (i === index ? " active" : "");
+  div.title = item.name;
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  const nm = document.createElement("span");
+  nm.className = "nm";
+  nm.textContent = item.name;
+  div.append(dot, nm, textBadge(item.text));
+  div.onclick = () => openAt(i);
+  return div;
+}
+async function loadList(focus) {
+  const params = new URLSearchParams({limit: "50000", q: $("q").value.trim(), t: $("tfilter").value, s: $("sfilter").value});
+  const data = await (await fetch("/api/images?" + params)).json();
+  items = data.items || [];
+  listStats = {total: data.total, done: data.done, texts: data.texts || {}};
+  index = focus ? items.findIndex(item => item.name === focus) : -1;
+  paintMeta();
+  const frag = document.createDocumentFragment();
+  items.forEach((item, i) => frag.appendChild(listRow(item, i)));
+  listEl.innerHTML = "";
+  listEl.appendChild(frag);
+  if (!items.length) listEl.innerHTML = '<div class="empty">没有符合条件的图片</div>';
+}
+function markRow(i) {
+  if (!items[i] || !listEl.children[i]) return;
+  listEl.replaceChild(listRow(items[i], i), listEl.children[i]);
+}
+function setItemState(i, patch) {
+  if (!items[i]) return;
+  const before = {...items[i]};
+  Object.assign(items[i], patch);
+  if (listStats) {
+    if (before.saved !== items[i].saved) listStats.done += items[i].saved ? 1 : -1;
+    if (before.text !== items[i].text) {
+      listStats.texts[before.text] = Math.max(0, (listStats.texts[before.text] || 0) - 1);
+      listStats.texts[items[i].text] = (listStats.texts[items[i].text] || 0) + 1;
+    }
+    paintMeta();
+  }
+  markRow(i);
+}
+let listTimer = null;
+$("q").addEventListener("input", () => { clearTimeout(listTimer); listTimer = setTimeout(() => reloadList(), 250); });
+$("tfilter").onchange = () => reloadList();
+$("sfilter").onchange = () => reloadList();
+async function reloadList() {
+  const name = index >= 0 && items[index] ? items[index].name : "";
+  await loadList(name);
+}
+
+// ---------- 多模态文字 ----------
+let textItems = [];
+let textDirty = false;
+let textGenerator = "";
+let vlmCfg = null;
+function textStateOf(rows) {
+  if (!rows.length) return "none";
+  const states = new Set(rows.map(r => r.status));
+  if (states.has("pending")) return "pending";
+  if (states.has("rejected")) return "rejected";
+  return "approved";
+}
+function promptById(id) {
+  return ((vlmCfg && vlmCfg.project.prompts) || []).find(p => p.id === id) || null;
+}
+function autosize(area) {
+  area.style.height = "auto";
+  area.style.height = (area.scrollHeight + 2) + "px";
+}
+function autosizeAll() {
+  document.querySelectorAll("#text-list textarea").forEach(autosize);
+}
+function textArea(value, placeholder, onInput) {
+  const area = document.createElement("textarea");
+  area.rows = 1;
+  area.value = value || "";
+  area.placeholder = placeholder;
+  area.oninput = () => { onInput(area.value); autosize(area); };
+  return area;
+}
+function setTextDirty(flag) {
+  textDirty = flag;
+  $("text-save").textContent = flag ? "保存文字 *" : "保存文字";
+}
+function renderTexts() {
+  const box = $("text-list");
+  box.innerHTML = "";
+  const none = index < 0;
+  ["text-save", "text-add", "approve-all", "run-one", "run-batch-one"].forEach(id => { $(id).disabled = none; });
+  const pending = textItems.filter(r => r.status === "pending").length;
+  $("vlm-count").textContent = textItems.length;
+  $("vlm-count").classList.toggle("warn", pending > 0);
+  $("text-src").textContent = textGenerator ? "来源：" + textGenerator : "";
+  if (none) { box.innerHTML = "<div class='empty'>先打开一张图片。</div>"; return; }
+  if (!textItems.length) { box.innerHTML = "<div class='empty'>这张图还没有文字。选一条提示词点「运行」，或点「手写」。</div>"; return; }
+  textItems.forEach((row, n) => {
+    const card = document.createElement("div");
+    card.className = "qa " + row.status;
+    const head = document.createElement("div");
+    head.className = "head";
+    const info = document.createElement("span");
+    info.className = "grow";
+    const prompt = promptById(row.prompt);
+    info.innerHTML = "#" + (n + 1) + " <span class='src'>" + (row.source === "human" ? "人工" : "模型") + "</span> · " + (TEXT_WORDS[row.status] || row.status);
+    info.appendChild(document.createTextNode((prompt ? " · " + prompt.name : "") + (row.kind && row.kind !== "qa" ? " · " + row.kind : "")));
+    head.append(info, rowButton("删除", () => { textItems.splice(n, 1); setTextDirty(true); renderTexts(); }, {className: "sm"}));
+    const ql = document.createElement("label");
+    ql.textContent = "问题";
+    const q = textArea(row.question, "问题 / 指令", v => { row.question = v; markHuman(row); setTextDirty(true); });
+    const al = document.createElement("label");
+    al.textContent = "回答";
+    const a = textArea(row.answer, "回答", v => { row.answer = v; markHuman(row); setTextDirty(true); });
+    const ops = document.createElement("div");
+    ops.className = "ops";
+    const setState = state => () => { row.status = state; setTextDirty(true); renderTexts(); };
+    ops.append(
+      rowButton(row.status === "approved" ? "✓ 已通过" : "通过", setState("approved"), {className: "sm ok" + (row.status === "approved" ? " on" : "")}),
+      rowButton(row.status === "rejected" ? "✗ 已打回" : "打回", setState("rejected"), {className: "sm no" + (row.status === "rejected" ? " on" : "")}),
+      rowButton("待审", setState("pending"), {className: "sm", disabled: row.status === "pending"}));
+    card.append(head, ql, q, al, a, ops);
+    if (row.draft && (row.draft.question !== row.question || row.draft.answer !== row.answer)) {
+      const draft = document.createElement("div");
+      draft.className = "draft";
+      draft.innerHTML = "<b>模型原稿</b>\n问：" + escapeHtml(row.draft.question) + "\n答：" + escapeHtml(row.draft.answer) + "\n";
+      draft.appendChild(rowButton("恢复原稿", () => {
+        row.question = row.draft.question;
+        row.answer = row.draft.answer;
+        row.source = "model";
+        setTextDirty(true);
+        renderTexts();
+      }, {className: "sm"}));
+      card.appendChild(draft);
+    }
+    box.appendChild(card);
+  });
+  requestAnimationFrame(autosizeAll);
+}
+function escapeHtml(s) { return String(s || "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c])); }
+function markHuman(row) {
+  if (row.draft && (row.draft.question !== row.question || row.draft.answer !== row.answer)) row.source = "human";
+}
+function setTexts(payload) {
+  textItems = ((payload && payload.items) || []).map(r => ({...r}));
+  textGenerator = (payload && payload.generator) || "";
+  setTextDirty(false);
+  renderTexts();
+}
+async function saveTexts(quiet) {
+  if (index < 0) return true;
+  const name = items[index].name;
+  const res = await postJSON("/api/texts/save", {name, items: textItems});
+  const data = await res.json();
+  if (!res.ok) { toastCenter(data.error || "保存文字失败", "err"); return false; }
+  if (items[index] && items[index].name === name) {
+    setTexts(data.texts);
+    setItemState(index, {text: data.status});
+  }
+  if (!quiet) setStatus("文字已保存：" + data.texts.items.length + " 条");
+  return true;
+}
+$("text-save").onclick = () => saveTexts();
+$("text-add").onclick = () => {
+  if (index < 0) return;
+  textItems.push({id: "h" + Date.now(), kind: "qa", question: "", answer: "", source: "human", status: "approved"});
+  setTextDirty(true);
+  renderTexts();
+  const areas = document.querySelectorAll("#text-list textarea");
+  if (areas.length > 1) areas[areas.length - 2].focus();
+};
+async function approveAllAndNext() {
+  if (index < 0) return;
+  textItems.forEach(row => { if (row.status === "pending") row.status = "approved"; });
+  setTextDirty(true);
+  renderTexts();
+  if (await saveAll(true)) next();
+}
+$("approve-all").onclick = approveAllAndNext;
+
+// 运行提示词
+function renderRunPrompts() {
+  const sel = $("run-prompt");
+  const keep = sel.value;
+  sel.innerHTML = "";
+  const prompts = (vlmCfg && vlmCfg.project.prompts) || [];
+  prompts.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name + (p.format === "boxes" ? "（检测框）" : p.format === "json" ? "（问答）" : "");
+    sel.appendChild(opt);
+  });
+  if (prompts.some(p => p.id === keep)) sel.value = keep;
+  const provider = activeProvider();
+  $("run-info").textContent = provider ? "接口：" + provider.name + " · " + provider.model : "还没有配置大模型接口，点右上角「大模型设置」";
+  if (!prompts.length) $("run-info").textContent = "这个项目还没有提示词，点右上角「大模型设置」添加";
+}
+function activeProvider() {
+  if (!vlmCfg) return null;
+  const id = vlmCfg.project.provider || vlmCfg.default_provider;
+  return vlmCfg.providers.find(p => p.id === id) || vlmCfg.providers[0] || null;
+}
+async function loadVlmConfig() {
+  try {
+    vlmCfg = await (await fetch("/api/vlm/config")).json();
+  } catch (err) {
+    vlmCfg = null;
+  }
+  renderRunPrompts();
+  renderTexts();
+}
+function mergeRunItems(newItems, promptIds, generator) {
+  const ids = new Set(promptIds);
+  textItems = textItems.filter(item => item.status === "approved" || item.source === "human" || (item.prompt && !ids.has(item.prompt)));
+  const now = Date.now();
+  newItems.forEach((item, n) => {
+    textItems.push({
+      id: "t" + now + "_" + n, kind: item.kind || "qa", prompt: item.prompt,
+      question: item.question, answer: item.answer, source: "model", status: "pending",
+      draft: {question: item.question, answer: item.answer}
+    });
+  });
+  textGenerator = generator || textGenerator;
+  setTextDirty(true);
+  renderTexts();
+}
+async function runPrompts(promptIds) {
+  if (index < 0 || !promptIds.length) return;
+  const name = items[index].name;
+  const ticket = ++seq;
+  const prompts = promptIds.map(promptById).filter(Boolean);
+  let collected = [];
+  let generator = "";
+  let boxes = null;
+  try {
+    for (const prompt of prompts) {
+      toastCenter("大模型：" + prompt.name + " …", "busy");
+      const res = await postJSON("/api/vlm/run", {name, prompt: prompt.id, shapes: saved.map(plainShape)});
+      const data = await res.json();
+      if (ticket !== seq || !items[index] || items[index].name !== name) return;
+      if (!res.ok) { toastCenter(prompt.name + " 失败：" + (data.error || res.status), "err"); return; }
+      generator = data.generator;
+      collected = collected.concat(data.items || []);
+      if (prompt.format === "boxes") boxes = data.boxes || [];
+      setStatus(prompt.name + " 用时 " + (data.ms / 1000).toFixed(1) + " 秒");
+    }
+  } catch (err) {
+    toastCenter("大模型调用失败：" + err, "err");
+    return;
+  }
+  toastCenter("");
+  const textIds = prompts.filter(p => p.format !== "boxes").map(p => p.id);
+  if (textIds.length) mergeRunItems(collected, textIds, generator);
+  if (boxes) showCandidateBoxes(boxes);
+}
+function showCandidateBoxes(boxes) {
+  points = [];
+  draftBox = null;
+  current = {polygons: [], boxes: boxes.map(b => b.box), boxLabels: boxes.map(b => b.label)};
+  boxes.forEach(b => ensureLabel(b.label, false));
+  draw();
+  if (boxes.length) {
+    showTab("cv");
+    setStatus("大模型给出 " + boxes.length + " 个候选框（红色），按 F 确认加入，C 清除");
+  } else {
+    setStatus("大模型没有给出框");
+  }
+}
+$("run-one").onclick = () => runPrompts([$("run-prompt").value].filter(Boolean));
+$("run-batch-one").onclick = () => {
+  const ids = ((vlmCfg && vlmCfg.project.prompts) || []).filter(p => p.batch).map(p => p.id);
+  if (!ids.length) { toastCenter("没有勾选「参与批量生成」的提示词", "err"); return; }
+  runPrompts(ids);
+};
+
+// 后台批量
+let genTimer = null;
+let genWasRunning = false;
+async function pollGen() {
+  let state;
+  try { state = await (await fetch("/api/texts/status")).json(); } catch (err) { return; }
+  const el = $("gen-progress");
+  const mine = !state.project || state.project === projectId;
+  $("gen-all").textContent = state.running ? "停止" : "批量生成";
+  $("gen-bar").firstElementChild.style.width = state.running ? state.percent + "%" : "0";
+  if (state.running) {
+    el.textContent = (mine ? "" : "其他项目 ") + "生成中 " + state.done + "/" + state.total + (state.failed ? " · 失败 " + state.failed : "") + (state.current ? " · " + state.current : "");
+    el.title = el.textContent;
+    genWasRunning = true;
+    if (!genTimer) genTimer = setInterval(pollGen, 1500);
+    return;
+  }
+  if (genTimer) { clearInterval(genTimer); genTimer = null; }
+  if (genWasRunning) {
+    genWasRunning = false;
+    el.textContent = (state.canceled ? "已停止 " : "完成 ") + state.done + "/" + state.total + (state.failed ? " · 失败 " + state.failed : "");
+    el.title = state.error || el.textContent;
+    if (mine) {
+      await reloadList();
+      if (index >= 0 && items[index] && !textDirty) {
+        const ann = await (await fetch("/api/annotation/" + encodeURIComponent(items[index].name))).json();
+        setTexts(ann.texts);
+      }
+    }
+  } else if (!el.textContent) {
+    el.textContent = state.generator ? "接口：" + state.generator : "未配置大模型接口";
+  }
+}
+$("gen-all").onclick = async () => {
+  const state = await (await fetch("/api/texts/status")).json();
+  if (state.running) { await postJSON("/api/texts/stop"); pollGen(); return; }
+  const batch = ((vlmCfg && vlmCfg.project.prompts) || []).filter(p => p.batch);
+  if (!batch.length) { toastCenter("没有勾选「参与批量生成」的提示词，先到「大模型设置」里勾选", "err"); return; }
+  if (!confirm("用这些提示词给「没生成」和「打回」的图片后台生成文字：\n\n" + batch.map(p => "· " + p.name).join("\n") + "\n\n继续？")) return;
+  const res = await postJSON("/api/texts/generate", {scope: "missing"});
+  const data = await res.json();
+  if (!res.ok) { toastCenter(data.error || "生成失败", "err"); return; }
+  $("gen-progress").textContent = data.queued ? "已排队 " + data.queued + " 张" : "没有需要生成的图片";
+  pollGen();
+};
+
+// ---------- 打开 / 保存 ----------
+function plainShape(shape) {
+  return {label: shape.label, points: shape.points, shape_type: shape.shape_type, flags: shape.locked ? {locked: true} : {}};
+}
+async function saveShapes(quiet) {
+  if (index < 0) return true;
+  const name = items[index].name;
+  const res = await postJSON("/api/save", {name, shapes: saved.map(shape => ({...plainShape(shape), locked: shape.locked}))});
+  const data = await res.json();
+  if (!res.ok) { toastCenter(data.error || "保存失败", "err"); return false; }
+  savedSnapshot = shapesKey();
+  if (items[index] && items[index].name === name) setItemState(index, {saved: saved.length > 0});
+  if (!quiet) setStatus("已保存：" + data.count + " 个目标");
+  return true;
+}
+async function saveAll(quiet) {
+  if (index < 0) return true;
+  let ok = await saveShapes(true);
+  if (ok && textDirty) ok = await saveTexts(true);
+  if (ok && !quiet) setStatus("已保存：" + saved.length + " 个目标，" + textItems.length + " 条文字");
+  return ok;
+}
+function anyDirty() { return shapesDirty() || textDirty; }
+async function leaveCurrent() {
+  if (index < 0 || !items[index] || !anyDirty()) return true;
+  if ($("autosave").checked) return await saveAll(true);
+  return confirm("这张图有未保存的修改，不保存就离开？");
+}
+async function openAt(i) {
+  if (busy || i < 0 || i >= items.length) return;
+  if (i !== index && !(await leaveCurrent())) return;
+  index = i;
+  points = [];
+  draftBox = null;
+  polyDraft = [];
+  polyHover = null;
+  drag = null;
+  current = {polygons: [], boxes: [], boxLabels: []};
+  selectedShapeId = null;
+  selectedVertex = null;
+  editDrag = null;
+  pendingSelect = null;
+  clearTimeout(promptTimer);
+  promptTimer = null;
+  editingShapeId = null;
+  history = [];
+  viewScale = 1;
+  saved = [];
+  draw();
+  const item = items[i];
+  [...listEl.children].forEach((el, n) => el.classList.toggle("active", n === i));
+  const row = listEl.children[i];
+  if (row) row.scrollIntoView({block: "nearest"});
+  toastCenter("正在打开 " + item.name, "busy");
+  const ann = await (await fetch("/api/annotation/" + encodeURIComponent(item.name))).json();
+  if (index !== i) return;
+  saved = hydrate(ann.shapes || []);
+  savedSnapshot = shapesKey();
+  setTexts(ann.texts);
+  let addedLabel = false;
+  saved.forEach(shape => { if (ensureLabel(shape.label, false)) addedLabel = true; });
+  if (addedLabel) persistLabels();
+  renderShapes();
+  try {
+    await new Promise((resolve, reject) => {
+      photo.onload = resolve;
+      photo.onerror = () => reject(new Error("图片打不开"));
+      photo.src = "/api/image/" + encodeURIComponent(item.name) + "?project=" + encodeURIComponent(projectId);
+    });
+  } catch (err) {
+    toastCenter(err.message || "图片打不开", "err");
+    return;
+  }
+  if (index !== i) return;
+  layout();
+  toastCenter("");
+  store("label-place:" + projectId, item.name);
+  setStatus(item.name + " · " + photo.naturalWidth + "×" + photo.naturalHeight + " · " + saved.length + " 个目标");
+}
+window.addEventListener("beforeunload", event => {
+  if (anyDirty()) { event.preventDefault(); event.returnValue = ""; }
+});
+
+// ---------- 画布 ----------
+function layout() {
+  if (!photo.naturalWidth) return;
+  const maxW = Math.max(1, stageWrap.clientWidth - 24);
+  const maxH = Math.max(1, stageWrap.clientHeight - 24);
+  const fit = Math.min(maxW / photo.naturalWidth, maxH / photo.naturalHeight);
+  photo.style.width = Math.max(1, Math.round(photo.naturalWidth * fit * viewScale)) + "px";
+  photo.style.height = Math.max(1, Math.round(photo.naturalHeight * fit * viewScale)) + "px";
+  resize();
+  draw();
+  $("zoom").textContent = Math.round(viewScale * 100) + "%";
+}
+function resize() {
+  const rect = photo.getBoundingClientRect();
+  overlay.width = Math.max(1, Math.round(rect.width));
+  overlay.height = Math.max(1, Math.round(rect.height));
+}
+function toImage(event) {
+  const rect = overlay.getBoundingClientRect();
+  return [
+    (event.clientX - rect.left) / rect.width * photo.naturalWidth,
+    (event.clientY - rect.top) / rect.height * photo.naturalHeight
+  ];
+}
+function sx(x) { return x / photo.naturalWidth * overlay.width; }
+function sy(y) { return y / photo.naturalHeight * overlay.height; }
+function highlightOf(shape) {
+  if (shape.id && shape.id === selectedShapeId) return "shape";
+  if (!selectedShapeId && selectedLabel && shape.label === selectedLabel) return "label";
+  return "";
+}
+function drawShape(shape, color, fill, width) {
+  ctx.lineWidth = width || 2;
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = color;
+  if (shape.shape_type === "rectangle" && shape.points.length >= 2) {
+    const a = shape.points[0], b = shape.points[1];
+    ctx.fillRect(sx(a[0]), sy(a[1]), sx(b[0] - a[0]), sy(b[1] - a[1]));
+    ctx.strokeRect(sx(a[0]), sy(a[1]), sx(b[0] - a[0]), sy(b[1] - a[1]));
+    return;
+  }
+  ctx.beginPath();
+  shape.points.forEach((p, i) => i ? ctx.lineTo(sx(p[0]), sy(p[1])) : ctx.moveTo(sx(p[0]), sy(p[1])));
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+}
+function drawTag(text, x, y, color) {
+  ctx.font = "12px sans-serif";
+  const w = ctx.measureText(text).width + 8;
+  const top = Math.max(0, y - 18);
+  ctx.fillStyle = "rgba(11,13,17,.8)";
+  ctx.fillRect(x, top, w, 17);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x + 4, top + 13);
+}
+function shapeTop(shape) {
+  const xs = shape.points.map(p => p[0]), ys = shape.points.map(p => p[1]);
+  return [sx(Math.min(...xs)), sy(Math.min(...ys))];
+}
+function draw() {
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+  if (!photo.naturalWidth) return;
+  for (const shape of saved) {
+    const mode = highlightOf(shape);
+    const base = labelColor(shape.label);
+    if (mode === "shape") drawShape(shape, "#ffdf5d", "rgba(255,223,93,.4)", 3);
+    else if (mode === "label") drawShape(shape, base, hexA(base, .38), 3);
+    else drawShape(shape, base, hexA(base, .18), 2);
+    const [tx, ty] = shapeTop(shape);
+    drawTag((shape.locked ? "🔒" : "") + shape.label, tx, ty, mode === "shape" ? "#ffdf5d" : base);
+    if (mode === "shape" && !shape.locked) drawHandles(shape);
+  }
+  for (const poly of current.polygons) drawShape({points: poly}, "#f85149", "rgba(248,81,73,.35)");
+  current.boxes.forEach((box, n) => {
+    drawShape({shape_type: "rectangle", points: [[box[0], box[1]], [box[2], box[3]]]}, "#f85149", "rgba(248,81,73,.2)");
+    if (current.boxLabels[n]) drawTag("候选 " + current.boxLabels[n], sx(box[0]), sy(box[1]), "#ff7b72");
+  });
+  if (draftBox) {
+    ctx.strokeStyle = "#d29922";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sx(draftBox.x1), sy(draftBox.y1), sx(draftBox.x2 - draftBox.x1), sy(draftBox.y2 - draftBox.y1));
+  }
+  for (const p of points) {
+    ctx.beginPath();
+    ctx.arc(sx(p.x), sy(p.y), 5, 0, Math.PI * 2);
+    ctx.fillStyle = p.positive ? "#3fb950" : "#f85149";
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+  }
+  if (polyDraft.length) {
+    ctx.beginPath();
+    polyDraft.forEach((p, i) => i ? ctx.lineTo(sx(p[0]), sy(p[1])) : ctx.moveTo(sx(p[0]), sy(p[1])));
+    if (polyHover) ctx.lineTo(sx(polyHover[0]), sy(polyHover[1]));
+    ctx.strokeStyle = "#d29922";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    polyDraft.forEach((p, i) => {
+      ctx.beginPath();
+      ctx.arc(sx(p[0]), sy(p[1]), i === 0 ? 6 : 4, 0, Math.PI * 2);
+      ctx.fillStyle = i === 0 ? "#3fb950" : "#d29922";
+      ctx.fill();
+    });
+  }
+}
+async function segment(extra) {
+  if (index < 0) return;
+  const spec = currentModel();
+  const text = spec && spec.prompts.includes("text") ? $("text").value.trim() : "";
+  const useTextOnly = extra && extra.textOnly;
+  if (useTextOnly) rememberPrompt(text);
+  if (!useTextOnly && !points.length && !draftBox) {
+    if (!text) { current = {polygons: [], boxes: [], boxLabels: []}; draw(); return; }
+  }
+  const ticket = ++seq;
+  busy = true;
+  toastCenter(((spec && spec.name) || modelName()) + " 正在计算…", "busy");
+  const box = draftBox ? [Math.min(draftBox.x1, draftBox.x2), Math.min(draftBox.y1, draftBox.y2), Math.max(draftBox.x1, draftBox.x2), Math.max(draftBox.y1, draftBox.y2)] : null;
+  try {
+    const res = await postJSON("/api/segment", {
+      name: items[index].name,
+      model: modelName(),
+      output: outputMode(),
+      confidence: Number($("confidence").value),
+      points: useTextOnly ? [] : points,
+      box: useTextOnly ? null : box,
+      text
+    });
+    const data = await res.json();
+    if (ticket !== seq) return;
+    if (!res.ok) { toastCenter(data.error || "计算失败", "err"); return; }
+    current = {polygons: data.polygons || [], boxes: data.boxes || [], boxLabels: []};
+    draw();
+    toastCenter("");
+    const n = current.polygons.length + current.boxes.length;
+    setStatus(n ? "得到 " + n + " 个候选（红色），F 确认" : "没有分出目标，换个点、框或文字再试。");
+  } catch (err) {
+    if (ticket === seq) toastCenter("计算失败：" + err, "err");
+  } finally {
+    if (ticket === seq) busy = false;
+  }
+}
+function hitPx() {
+  if (!photo.naturalWidth || !overlay.width) return 12;
+  return 8 * photo.naturalWidth / overlay.width;
+}
+function clonePoints(pts) { return pts.map(p => [p[0], p[1]]); }
+function rectOf(shape) {
+  const a = shape.points[0], b = shape.points[1];
+  return {x1: Math.min(a[0], b[0]), y1: Math.min(a[1], b[1]), x2: Math.max(a[0], b[0]), y2: Math.max(a[1], b[1])};
+}
+function rectHandles(shape) {
+  const r = rectOf(shape);
+  const mx = (r.x1 + r.x2) / 2, my = (r.y1 + r.y2) / 2;
+  return [
+    {id: "nw", x: r.x1, y: r.y1}, {id: "n", x: mx, y: r.y1}, {id: "ne", x: r.x2, y: r.y1},
+    {id: "e", x: r.x2, y: my}, {id: "se", x: r.x2, y: r.y2}, {id: "s", x: mx, y: r.y2},
+    {id: "sw", x: r.x1, y: r.y2}, {id: "w", x: r.x1, y: my}
+  ];
+}
+function insidePoly(pts, x, y) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-9) + xi) inside = !inside;
+  }
+  return inside;
+}
+function distToSeg(x, y, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy || 1;
+  let t = ((x - a[0]) * dx + (y - a[1]) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const px = a[0] + t * dx, py = a[1] + t * dy;
+  return {d: Math.hypot(x - px, y - py), t, x: px, y: py};
+}
+function closestEdge(shape, x, y) {
+  let best = null;
+  const n = shape.points.length;
+  for (let i = 0; i < n; i++) {
+    const hit = distToSeg(x, y, shape.points[i], shape.points[(i + 1) % n]);
+    if (!best || hit.d < best.d) best = {d: hit.d, index: i, t: hit.t, x: hit.x, y: hit.y};
+  }
+  return best;
+}
+function shapeAt(x, y) {
+  const tol = hitPx();
+  for (let i = saved.length - 1; i >= 0; i--) {
+    const shape = saved[i];
+    if (shape.shape_type === "rectangle") {
+      const r = rectOf(shape);
+      if (x >= r.x1 - tol && x <= r.x2 + tol && y >= r.y1 - tol && y <= r.y2 + tol) return shape;
+    } else if (shape.points.length >= 3 && (insidePoly(shape.points, x, y) || (closestEdge(shape, x, y) || {}).d <= tol)) {
+      return shape;
+    }
+  }
+  return null;
+}
+function drawHandle(ix, iy, active) {
+  const x = sx(ix), y = sy(iy);
+  const r = active ? 6 : 4;
+  ctx.beginPath();
+  ctx.rect(x - r, y - r, r * 2, r * 2);
+  ctx.fillStyle = active ? "#ff7b72" : "#ffffff";
+  ctx.strokeStyle = "#1f2328";
+  ctx.lineWidth = 1;
+  ctx.fill();
+  ctx.stroke();
+}
+function drawHandles(shape) {
+  if (shape.shape_type === "rectangle") {
+    rectHandles(shape).forEach(h => drawHandle(h.x, h.y, false));
+    return;
+  }
+  shape.points.forEach((p, i) => drawHandle(p[0], p[1], i === selectedVertex));
+}
+function selectedShape() { return saved.find(shape => shape.id === selectedShapeId) || null; }
+function tryBeginEdit(x, y) {
+  const shape = selectedShape();
+  if (!shape || shape.locked) return false;
+  const tol = hitPx();
+  if (shape.shape_type === "rectangle") {
+    const handle = rectHandles(shape).find(item => Math.hypot(item.x - x, item.y - y) <= tol);
+    const r = rectOf(shape);
+    if (handle) {
+      editDrag = {type: "rect", id: handle.id, origin: r, before: clonePoints(shape.points)};
+      return true;
+    }
+    if (x >= r.x1 && x <= r.x2 && y >= r.y1 && y <= r.y2) {
+      editDrag = {type: "move", x, y, origin: clonePoints(shape.points), before: clonePoints(shape.points)};
+      return true;
+    }
+    return false;
+  }
+  let vertex = -1, best = tol;
+  shape.points.forEach((p, i) => {
+    const d = Math.hypot(p[0] - x, p[1] - y);
+    if (d <= best) { best = d; vertex = i; }
+  });
+  if (vertex >= 0) {
+    selectedVertex = vertex;
+    editDrag = {type: "vertex", index: vertex, before: clonePoints(shape.points)};
+    draw();
+    return true;
+  }
+  const edge = closestEdge(shape, x, y);
+  if (edge && edge.d <= tol && edge.t > 0.08 && edge.t < 0.92) {
+    const before = clonePoints(shape.points);
+    shape.points.splice(edge.index + 1, 0, [edge.x, edge.y]);
+    selectedVertex = edge.index + 1;
+    editDrag = {type: "vertex", index: selectedVertex, before};
+    draw();
+    return true;
+  }
+  if (insidePoly(shape.points, x, y)) {
+    selectedVertex = null;
+    editDrag = {type: "move", x, y, origin: clonePoints(shape.points), before: clonePoints(shape.points)};
+    draw();
+    return true;
+  }
+  return false;
+}
+function updateEdit(x, y) {
+  const shape = selectedShape();
+  if (!shape || !editDrag) return;
+  if (editDrag.type === "move") {
+    const dx = x - editDrag.x, dy = y - editDrag.y;
+    shape.points = editDrag.origin.map(p => [p[0] + dx, p[1] + dy]);
+  } else if (editDrag.type === "vertex") {
+    shape.points[editDrag.index] = [x, y];
+  } else if (editDrag.type === "rect") {
+    let {x1, y1, x2, y2} = editDrag.origin;
+    const id = editDrag.id;
+    if (id === "nw" || id === "w" || id === "sw") x1 = x;
+    if (id === "ne" || id === "e" || id === "se") x2 = x;
+    if (id === "nw" || id === "n" || id === "ne") y1 = y;
+    if (id === "sw" || id === "s" || id === "se") y2 = y;
+    shape.points = [[x1, y1], [x2, y2]];
+  }
+  draw();
+}
+function finishEdit() {
+  const shape = selectedShape();
+  const info = editDrag;
+  editDrag = null;
+  if (!shape || !info) return;
+  if (shape.shape_type === "rectangle") {
+    const r = rectOf(shape);
+    shape.points = [[r.x1, r.y1], [r.x2, r.y2]];
+  }
+  if (JSON.stringify(info.before) !== JSON.stringify(shape.points)) {
+    history.push({type: "geom", id: shape.id, points: info.before});
+    setStatus("已调整");
+  }
+  draw();
+}
+function updateCursor(x, y) {
+  if (promptMode() === "pan") { overlay.style.cursor = "grab"; return; }
+  const shape = selectedShape();
+  if (!shape || shape.locked) { overlay.style.cursor = "crosshair"; return; }
+  const tol = hitPx();
+  if (shape.shape_type === "rectangle") {
+    const handle = rectHandles(shape).find(item => Math.hypot(item.x - x, item.y - y) <= tol);
+    const cursor = {nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize", n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize"};
+    if (handle) { overlay.style.cursor = cursor[handle.id]; return; }
+    const r = rectOf(shape);
+    overlay.style.cursor = (x >= r.x1 && x <= r.x2 && y >= r.y1 && y <= r.y2) ? "move" : "crosshair";
+    return;
+  }
+  if (shape.points.some(p => Math.hypot(p[0] - x, p[1] - y) <= tol)) { overlay.style.cursor = "pointer"; return; }
+  const edge = closestEdge(shape, x, y);
+  if (edge && edge.d <= tol) { overlay.style.cursor = "copy"; return; }
+  overlay.style.cursor = insidePoly(shape.points, x, y) ? "move" : "crosshair";
+}
+function labelName() { return $("label").value.trim() || selectedLabel || "目标"; }
+function addHandShape(shapeType, pts) {
+  const label = labelName();
+  ensureLabel(label);
+  selectedLabel = label;
+  const shape = {id: "s" + (shapeSeq++), label, points: pts, shape_type: shapeType, locked: false};
+  saved.push(shape);
+  history.push({type: "commit", ids: [shape.id]});
+  selectedShapeId = shape.id;
+  selectedVertex = null;
+  renderShapes();
+  draw();
+  setStatus("已加上「" + label + "」");
+}
+function finishPoly() {
+  if (polyDraft.length < 3) { setStatus("多边形至少要 3 个点"); return; }
+  const pts = polyDraft.map(p => [p[0], p[1]]);
+  polyDraft = [];
+  polyHover = null;
+  addHandShape("polygon", pts);
+}
+function commitHandRect() {
+  const x1 = Math.min(draftBox.x1, draftBox.x2), y1 = Math.min(draftBox.y1, draftBox.y2);
+  const x2 = Math.max(draftBox.x1, draftBox.x2), y2 = Math.max(draftBox.y1, draftBox.y2);
+  draftBox = null;
+  addHandShape("rectangle", [[x1, y1], [x2, y2]]);
+}
+function beginPrompt(button, x, y) {
+  if ((promptMode() === "box" || promptMode() === "hand-rect") && button === 0) {
+    drag = {x, y, hand: promptMode() === "hand-rect"};
+    draftBox = {x1: x, y1: y, x2: x, y2: y};
+    draw();
+    return;
+  }
+  if (promptMode() !== "point" || (button !== 0 && button !== 2)) return;
+  if (points.some(p => Math.hypot(p.x - x, p.y - y) <= hitPx() * 2.5)) {
+    setStatus("这个位置已经有点了");
+    return;
+  }
+  points.push({x, y, positive: button === 0});
+  draw();
+  segment();
+}
+overlay.addEventListener("contextmenu", e => e.preventDefault());
+stageWrap.addEventListener("mousedown", e => {
+  if (promptMode() !== "pan" || e.button !== 0 || index < 0 || !photo.naturalWidth) return;
+  panDrag = {x: e.clientX, y: e.clientY, left: stageWrap.scrollLeft, top: stageWrap.scrollTop};
+  overlay.style.cursor = "grabbing";
+  stageWrap.style.cursor = "grabbing";
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+overlay.addEventListener("mousedown", e => {
+  if (promptMode() === "pan") return;
+  if (index < 0 || !photo.naturalWidth || busy) return;
+  clearTimeout(promptTimer);
+  promptTimer = null;
+  const [x, y] = toImage(e);
+  if (e.button === 0 && tryBeginEdit(x, y)) return;
+  if (promptMode() === "hand-poly") {
+    if (e.button === 2) {
+      if (polyDraft.length) polyDraft.pop();
+      draw();
+      setStatus(polyDraft.length ? "已去掉上一个点" : "没有正在画的多边形");
+      return;
+    }
+    if (e.button !== 0) return;
+    if (!polyDraft.length && shapeAt(x, y)) {
+      pendingSelect = {x, y, button: e.button, moved: false};
+      return;
+    }
+    if (polyDraft.length >= 3 && Math.hypot(x - polyDraft[0][0], y - polyDraft[0][1]) <= hitPx() * 1.6) {
+      finishPoly();
+      return;
+    }
+    polyDraft.push([x, y]);
+    draw();
+    return;
+  }
+  if (e.button === 0 && shapeAt(x, y)) {
+    pendingSelect = {x, y, button: 0, moved: false};
+    return;
+  }
+  beginPrompt(e.button, x, y);
+});
+overlay.addEventListener("dblclick", e => {
+  if (promptMode() === "pan") return;
+  clearTimeout(promptTimer);
+  promptTimer = null;
+  pendingSelect = null;
+  drag = null;
+  draftBox = null;
+  if (index < 0 || !photo.naturalWidth) return;
+  const [x, y] = toImage(e);
+  if (promptMode() === "hand-poly" && polyDraft.length >= 2) {
+    const last = polyDraft[polyDraft.length - 1];
+    const prev = polyDraft[polyDraft.length - 2];
+    if (Math.hypot(last[0] - prev[0], last[1] - prev[1]) <= hitPx()) polyDraft.pop();
+    if (polyDraft.length >= 3) { finishPoly(); return; }
+    draw();
+    return;
+  }
+  const shape = shapeAt(x, y);
+  if (!shape) { draw(); return; }
+  selectShape(shape.id);
+  showTab("cv");
+  if (shape.locked) { setStatus("这个目标已锁定"); return; }
+  setStatus(shape.shape_type === "rectangle"
+    ? "拖框移动，拖角或边改大小。Delete 删除整个框。"
+    : "拖点改位置，在边上点一下加点。选中点后 Delete 删该点；不选点时 Delete 删整个目标。");
+});
+window.addEventListener("mousemove", e => {
+  if (panDrag) {
+    stageWrap.scrollLeft = panDrag.left - (e.clientX - panDrag.x);
+    stageWrap.scrollTop = panDrag.top - (e.clientY - panDrag.y);
+    return;
+  }
+  if (index < 0 || !photo.naturalWidth) return;
+  const [x, y] = toImage(e);
+  if (promptMode() === "hand-poly") polyHover = [x, y];
+  if (editDrag) { updateEdit(x, y); return; }
+  if (pendingSelect) {
+    if (Math.hypot(x - pendingSelect.x, y - pendingSelect.y) > hitPx()) pendingSelect.moved = true;
+    if (pendingSelect.moved && pendingSelect.button === 0 && (promptMode() === "box" || promptMode() === "hand-rect")) {
+      const start = pendingSelect;
+      pendingSelect = null;
+      drag = {x: start.x, y: start.y, hand: promptMode() === "hand-rect"};
+      draftBox = {x1: start.x, y1: start.y, x2: x, y2: y};
+      draw();
+    }
+    return;
+  }
+  if (drag && draftBox) {
+    draftBox.x2 = x;
+    draftBox.y2 = y;
+    draw();
+    return;
+  }
+  if (promptMode() === "hand-poly" && polyDraft.length) draw();
+  updateCursor(x, y);
+});
+window.addEventListener("mouseup", () => {
+  if (panDrag) {
+    panDrag = null;
+    if (promptMode() === "pan") {
+      overlay.style.cursor = "grab";
+      stageWrap.style.cursor = "grab";
+    }
+    return;
+  }
+  if (editDrag) { finishEdit(); return; }
+  if (pendingSelect) {
+    const info = pendingSelect;
+    pendingSelect = null;
+    if (!info.moved && promptMode() === "point") {
+      promptTimer = setTimeout(() => {
+        promptTimer = null;
+        beginPrompt(info.button, info.x, info.y);
+      }, 280);
+    }
+    return;
+  }
+  if (!drag) return;
+  const hand = !!drag.hand;
+  drag = null;
+  if (!draftBox) return;
+  if (Math.abs(draftBox.x2 - draftBox.x1) < 4 || Math.abs(draftBox.y2 - draftBox.y1) < 4) { draftBox = null; draw(); return; }
+  if (hand) commitHandRect();
+  else segment();
+});
+window.addEventListener("resize", () => layout());
+new ResizeObserver(() => layout()).observe(stageWrap);
+stageWrap.addEventListener("wheel", event => {
+  if (!event.ctrlKey || !photo.naturalWidth) return;
+  event.preventDefault();
+  const old = viewScale;
+  viewScale = Math.min(12, Math.max(0.25, old * (event.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  const rect = stageWrap.getBoundingClientRect();
+  const ox = event.clientX - rect.left + stageWrap.scrollLeft;
+  const oy = event.clientY - rect.top + stageWrap.scrollTop;
+  layout();
+  const ratio = viewScale / old;
+  stageWrap.scrollLeft = ox * ratio - (event.clientX - rect.left);
+  stageWrap.scrollTop = oy * ratio - (event.clientY - rect.top);
+}, {passive: false});
+
+function undo() {
+  if (polyDraft.length) { polyDraft.pop(); draw(); setStatus("已去掉上一个点"); return; }
+  if (promptMode() === "box" && (draftBox || current.polygons.length || current.boxes.length)) {
+    draftBox = null;
+    current = {polygons: [], boxes: [], boxLabels: []};
+    draw();
+    return;
+  }
+  if (points.length) { points.pop(); draw(); segment(); return; }
+  if (current.polygons.length || current.boxes.length) {
+    current = {polygons: [], boxes: [], boxLabels: []};
+    draw();
+    return;
+  }
+  const item = history.pop();
+  if (!item) { setStatus("没有可撤销的操作"); return; }
+  if (item.type === "commit") {
+    const ids = new Set(item.ids);
+    saved = saved.filter(shape => shape.locked || !ids.has(shape.id));
+  } else if (item.type === "delete") {
+    saved.push(item.shape);
+    selectedShapeId = item.shape.id;
+  } else if (item.type === "edit") {
+    const shape = saved.find(s => s.id === item.id);
+    if (shape && !shape.locked) shape.label = item.label;
+  } else if (item.type === "geom") {
+    const shape = saved.find(s => s.id === item.id);
+    if (shape && !shape.locked) shape.points = item.points;
+    selectedVertex = null;
+  }
+  renderShapes();
+  draw();
+  setStatus("已撤销");
+}
+function clearDraft() {
+  points = [];
+  draftBox = null;
+  polyDraft = [];
+  polyHover = null;
+  current = {polygons: [], boxes: [], boxLabels: []};
+  draw();
+  setStatus("已清除当前候选");
+}
+function commit() {
+  const label = labelName();
+  const ids = [];
+  for (const poly of current.polygons) {
+    const shape = {id: "s" + (shapeSeq++), label, points: poly, shape_type: "polygon", locked: false};
+    saved.push(shape);
+    ids.push(shape.id);
+  }
+  current.boxes.forEach((box, n) => {
+    const name = current.boxLabels[n] || label;
+    const shape = {id: "s" + (shapeSeq++), label: name, points: [[box[0], box[1]], [box[2], box[3]]], shape_type: "rectangle", locked: false};
+    saved.push(shape);
+    ids.push(shape.id);
+  });
+  if (!ids.length) { setStatus("没有可确认的候选"); return; }
+  saved.forEach(shape => ensureLabel(shape.label, false));
+  persistLabels();
+  selectedLabel = label;
+  history.push({type: "commit", ids});
+  points = [];
+  draftBox = null;
+  current = {polygons: [], boxes: [], boxLabels: []};
+  selectedShapeId = ids[ids.length - 1];
+  renderShapes();
+  draw();
+  setStatus("已加入，共 " + saved.length + " 个目标");
+}
+function prev() { if (index > 0) openAt(index - 1); }
+function next() { if (index < items.length - 1) openAt(index + 1); else setStatus("已经是最后一张"); }
+
+$("undo").onclick = undo;
+$("clear").onclick = clearDraft;
+$("commit").onclick = commit;
+$("save").onclick = () => saveAll();
+$("prev").onclick = prev;
+$("next").onclick = next;
+
+// 文字分割的历史词
+const RECENT_KEY = "label-text-prompts";
+function loadRecents() {
+  try {
+    const rows = JSON.parse(store(RECENT_KEY) || "[]");
+    return Array.isArray(rows) ? rows.filter(item => typeof item === "string" && item.trim()).slice(0, 8) : [];
+  } catch (err) {
+    return [];
+  }
+}
+function saveRecents(rows) { store(RECENT_KEY, JSON.stringify(rows.slice(0, 8))); }
+function rememberPrompt(text) {
+  const name = (text || "").trim();
+  if (!name) return;
+  saveRecents([name, ...loadRecents().filter(item => item !== name)]);
+  renderRecents();
+}
+function renderRecents() {
+  const box = $("recents");
+  const input = $("text");
+  box.innerHTML = "";
+  const rows = loadRecents();
+  if (!rows.length) { box.hidden = true; return; }
+  rows.forEach(name => {
+    const chip = document.createElement("div");
+    chip.className = "recent";
+    const word = document.createElement("button");
+    word.type = "button";
+    word.className = "word";
+    word.textContent = name;
+    word.onmousedown = event => event.preventDefault();
+    word.onclick = () => { input.value = name; box.hidden = true; segment({textOnly: true}); };
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "x";
+    del.textContent = "×";
+    del.onmousedown = event => event.preventDefault();
+    del.onclick = event => {
+      event.stopPropagation();
+      saveRecents(loadRecents().filter(item => item !== name));
+      renderRecents();
+      input.focus();
+    };
+    chip.append(word, del);
+    box.appendChild(chip);
+  });
+  box.hidden = document.activeElement !== input;
+}
+$("text").addEventListener("focus", () => { renderRecents(); if (loadRecents().length) $("recents").hidden = false; });
+$("text").addEventListener("blur", () => { $("recents").hidden = true; });
+$("text").addEventListener("keydown", event => { if (event.key === "Enter") { $("recents").hidden = true; segment({textOnly: true}); } });
+$("textgo").onclick = () => segment({textOnly: true});
+$("add-label").onclick = () => {
+  const name = $("new-label").value.trim();
+  if (!name) return;
+  ensureLabel(name);
+  $("new-label").value = "";
+  selectLabel(name);
+};
+$("new-label").addEventListener("keydown", event => { if (event.key === "Enter") $("add-label").click(); });
+
+window.addEventListener("keydown", event => {
+  if (document.querySelector(".modal.show") || $("projects").classList.contains("show")) {
+    if (event.key === "Escape") { closeVlm(); $("pathbox").classList.remove("show"); }
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+    event.preventDefault();
+    saveAll();
+    return;
+  }
+  if (event.repeat || typing()) return;
+  if (event.key === "Escape" && polyDraft.length) {
+    polyDraft = [];
+    polyHover = null;
+    draw();
+    setStatus("已取消多边形");
+    return;
+  }
+  if (event.key === "Enter" && promptMode() === "hand-poly") {
+    event.preventDefault();
+    finishPoly();
+    return;
+  }
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    if (promptMode() === "hand-poly" && polyDraft.length && selectedVertex == null) {
+      polyDraft.pop();
+      draw();
+      return;
+    }
+    const shape = selectedShape();
+    if (!shape || shape.locked) return;
+    if (shape.shape_type === "polygon" && selectedVertex != null) {
+      if (shape.points.length <= 3) { deleteShape(shape.id); return; }
+      history.push({type: "geom", id: shape.id, points: clonePoints(shape.points)});
+      shape.points.splice(selectedVertex, 1);
+      selectedVertex = null;
+      draw();
+      setStatus("已删除该点。再按 Delete 删除整个目标");
+      return;
+    }
+    deleteShape(shape.id);
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    undo();
+    return;
+  }
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  const key = event.key.toLowerCase();
+  const actions = {
+    h: () => setMode(promptMode() === "pan" ? modeBeforePan : "pan"),
+    a: prev, d: next, s: () => saveAll(), c: clearDraft, f: commit, y: approveAllAndNext,
+  };
+  if (actions[key]) { event.preventDefault(); actions[key](); }
+});
+
+// ---------- 项目 ----------
+function wipeView() {
+  index = -1;
+  points = [];
+  draftBox = null;
+  polyDraft = [];
+  current = {polygons: [], boxes: [], boxLabels: []};
+  saved = [];
+  savedSnapshot = "[]";
+  selectedShapeId = null;
+  selectedVertex = null;
+  photo.onload = null;
+  photo.onerror = null;
+  photo.removeAttribute("src");
+  overlay.width = overlay.height = 1;
+  draw();
+  renderShapes();
+  setTexts(null);
+}
+async function showProjects() {
+  if (!(await leaveCurrent())) return;
+  if (projectId && index >= 0 && items[index]) store("label-place:" + projectId, items[index].name);
+  wipeView();
+  $("projects").classList.add("show");
+  loadProjects();
+}
+async function loadProjects() {
+  const data = await (await fetch("/api/projects")).json();
+  const box = $("project-list");
+  box.innerHTML = "";
+  if (!(data.projects || []).length) {
+    box.innerHTML = "<div class='empty'>还没有项目。在右上角填名称后点新建。</div>";
+    return;
+  }
+  for (const item of data.projects) {
+    const card = document.createElement("div");
+    card.className = "project";
+    const ratio = item.images ? Math.round(item.annotated / item.images * 100) : 0;
+    card.innerHTML = "<b></b><div class='stat'></div><div class='bar'><span></span></div><div class='actions'></div>";
+    card.querySelector("b").textContent = item.name;
+    card.querySelector(".stat").textContent = "图片 " + item.images + " · 已标注 " + item.annotated + " · 目标 " + item.shapes + (item.images ? "（" + ratio + "%）" : "");
+    card.querySelector(".bar span").style.width = ratio + "%";
+    const actions = card.querySelector(".actions");
+    actions.appendChild(rowButton("进入", () => enterProject(item.id, item.name), {className: "primary"}));
+    if (!item.builtin) actions.appendChild(rowButton("删除", () => removeProject(item)));
+    box.appendChild(card);
+  }
+}
+async function enterProject(id, name) {
+  projectId = id;
+  projectName = name;
+  $("proj-name").textContent = name;
+  $("proj-name").title = name;
+  document.title = name + " · 服务器标注";
+  $("projects").classList.remove("show");
+  $("q").value = "";
+  $("tfilter").value = "";
+  $("sfilter").value = "";
+  $("gen-progress").textContent = "";
+  items = [];
+  wipeView();
+  await Promise.all([loadLabels(), loadVlmConfig()]);
+  const place = store("label-place:" + id) || "";
+  await loadList(place);
+  pollGen();
+  let i = items.findIndex(item => item.name === place);
+  if (i < 0) i = items.length ? 0 : -1;
+  index = -1;
+  if (i >= 0) await openAt(i);
+  else setStatus("这个项目还没有图片，点左上角「导入」");
+  preload();
+}
+async function removeProject(item) {
+  if (!confirm("删除项目「" + item.name + "」？里面的图片和标注会一起删掉，不能恢复。")) return;
+  const res = await fetch("/api/projects/" + encodeURIComponent(item.id), {method: "DELETE"});
+  const data = await res.json();
+  if (!res.ok) { alert(data.error || "删除失败"); return; }
+  if (projectId === item.id) projectId = "";
+  loadProjects();
+}
+$("new-project").onsubmit = async event => {
+  event.preventDefault();
+  const input = $("project-name");
+  const name = input.value.trim();
+  if (!name) return;
+  const res = await postJSON("/api/projects", {name});
+  const data = await res.json();
+  if (!res.ok) { alert(data.error || "新建失败"); return; }
+  input.value = "";
+  loadProjects();
+};
+$("to-projects").onclick = showProjects;
+
+// ---------- 导入 / 导出 ----------
+const importInputs = {files: $("import-files"), dir: $("import-dir"), zip: $("import-zip")};
+bindMenu("import-local", item => {
+  if (!projectId) return;
+  if (item.dataset.kind === "server") {
+    $("pathbox").classList.add("show");
+    $("server-path").focus();
+    return;
+  }
+  importInputs[item.dataset.kind].click();
+});
+Object.values(importInputs).forEach(input => {
+  input.onchange = async event => {
+    const files = [...event.target.files];
+    event.target.value = "";
+    if (files.length) await importLocal(files);
+  };
+});
+bindMenu("export-btn", item => {
+  if (!projectId) return;
+  const params = new URLSearchParams({project: projectId});
+  if (item.dataset.all) params.set("all", "1");
+  if (item.dataset.images) params.set("images", "1");
+  const link = document.createElement("a");
+  link.href = "/api/export/" + item.dataset.kind + "?" + params;
+  link.click();
+  setStatus("正在导出 " + item.textContent + " …");
+});
+const IMAGE_EXT = /\.(jpe?g|png|bmp|webp)$/i;
+const ARCHIVE_EXT = /\.(zip|tar|tgz|tar\.gz|tar\.bz2|tar\.xz)$/i;
+async function importLocal(all) {
+  if (!projectId) return;
+  const files = all.filter(f => IMAGE_EXT.test(f.name) || ARCHIVE_EXT.test(f.name));
+  const ignored = all.length - files.length;
+  if (!files.length) { toastCenter("没有可导入的图片或压缩包" + (ignored ? "（忽略了 " + ignored + " 个其他文件）" : ""), "err"); return; }
+  // 压缩包单独发；图片按 200 张一批，避免一次请求太大。
+  const batches = [];
+  let cur = [];
+  let curBytes = 0;
+  for (const f of files) {
+    if (ARCHIVE_EXT.test(f.name)) { batches.push([f]); continue; }
+    if (cur.length >= 200 || curBytes + f.size > 400 * 1024 * 1024) { batches.push(cur); cur = []; curBytes = 0; }
+    cur.push(f);
+    curBytes += f.size;
+  }
+  if (cur.length) batches.push(cur);
+  let count = 0, skipped = ignored, sent = 0;
+  const bad = [];
+  try {
+    for (const batch of batches) {
+      const body = new FormData();
+      batch.forEach(file => body.append("files", file));
+      sent += batch.length;
+      toastCenter("正在导入 " + sent + " / " + files.length + (ARCHIVE_EXT.test(batch[0].name) ? "（解压 " + batch[0].name + "）" : "") + "…", "busy");
+      const res = await fetch("/api/import/files", {method: "POST", body});
+      const data = await res.json();
+      if (!res.ok) { toastCenter(data.error || "导入失败", "err"); return; }
+      count += data.count || 0;
+      skipped += data.skipped || 0;
+      if (data.error_archives) bad.push(...data.error_archives);
+    }
+    toastCenter(bad.length ? "这些压缩包打不开：" + bad.join("，") : "", bad.length ? "err" : "");
+    setStatus("已导入 " + count + " 张" + (skipped ? "，跳过 " + skipped + " 个" : ""));
+    reloadList();
+  } catch (err) {
+    toastCenter(err.message || "导入失败", "err");
+  }
+}
+$("path-cancel").onclick = () => $("pathbox").classList.remove("show");
+$("server-path").addEventListener("keydown", event => { if (event.key === "Enter") $("path-ok").click(); });
+$("path-ok").onclick = async () => {
+  const path = $("server-path").value.trim();
+  if (!path) return;
+  $("pathbox").classList.remove("show");
+  toastCenter("正在从服务器复制图片…", "busy");
+  try {
+    const res = await postJSON("/api/import/path", {path});
+    const data = await res.json();
+    if (!res.ok) { toastCenter(data.error || "导入失败", "err"); return; }
+    toastCenter("");
+    setStatus("已从服务器导入 " + data.count + " 张");
+    reloadList();
+  } catch (err) {
+    toastCenter(err.message || "导入失败", "err");
+  }
+};
+
+// ---------- 大模型设置 ----------
+const PROMPT_TEMPLATES = [
+  {name: "空白", kind: "qa", format: "text", question: "", batch: false},
+  {name: "隐患类别（LoRA 训练问题）", kind: "category", format: "text", question: "请判断图中隐患的类别。", batch: true},
+  {name: "图片描述", kind: "caption", format: "text", question: "请用一两句话客观描述这张图片的内容。", batch: false},
+  {name: "生成问答对", kind: "qa", format: "json", batch: false,
+    question: "请根据图片内容生成 3 条中文问答，用 JSON 数组输出，每条形如 {\"question\": \"…\", \"answer\": \"…\"}，只输出 JSON。"},
+  {name: "结合已有标注", kind: "hazard", format: "text", batch: false,
+    question: "图中已标注的目标（标签和像素框 [x1,y1,x2,y2]）：{shapes}。\n请结合这些目标，指出现场存在的安全隐患。"},
+  {name: "检测框（预标注）", kind: "boxes", format: "boxes", coords: "qwen1000", max_tokens: 1024, batch: false,
+    question: "请找出图中所有属于以下类别的目标：{labels}。用 JSON 数组输出，每个目标形如 {\"label\": \"类别\", \"bbox_2d\": [x1, y1, x2, y2]}，只输出 JSON。"},
+];
+let vEdit = null;
+let vSelP = 0;
+let vSelQ = 0;
+function vMsg(text, kind) {
+  $("vlm-msg").textContent = text || "";
+  $("vlm-msg").className = kind || "";
+}
+async function openVlm() {
+  if (!projectId) return;
+  const data = await (await fetch("/api/vlm/config")).json();
+  vEdit = JSON.parse(JSON.stringify(data));
+  vSelP = Math.max(0, vEdit.providers.findIndex(p => p.id === (vEdit.project.provider || vEdit.default_provider)));
+  vSelQ = 0;
+  $("vt-out").textContent = "";
+  $("pv-test-out").textContent = "";
+  vMsg("");
+  renderVlm();
+  $("vlm-modal").classList.add("show");
+}
+function closeVlm() { $("vlm-modal").classList.remove("show"); }
+$("open-vlm").onclick = openVlm;
+$("vlm-close").onclick = closeVlm;
+$("vlm-cancel").onclick = closeVlm;
+const PV_FIELDS = ["name", "url", "model", "key", "temperature", "max_tokens", "timeout", "image_side"];
+const PR_FIELDS = ["name", "kind", "format", "coords", "max_tokens", "system", "question"];
+function plistRow(text, tags, on, onclick) {
+  const row = document.createElement("div");
+  row.className = "row" + (on ? " on" : "");
+  const nm = document.createElement("span");
+  nm.className = "nm";
+  nm.textContent = text;
+  nm.title = text;
+  row.appendChild(nm);
+  tags.forEach(([word, cls]) => {
+    const tag = document.createElement("span");
+    tag.className = "tag " + (cls || "");
+    tag.textContent = word;
+    row.appendChild(tag);
+  });
+  row.onclick = onclick;
+  return row;
+}
+function renderVlm() {
+  const pl = $("pv-list");
+  pl.innerHTML = "";
+  if (!vEdit.providers.length) pl.innerHTML = "<div class='empty'>还没有接口，点「新增」</div>";
+  vEdit.providers.forEach((p, n) => {
+    const tags = [];
+    if (p.id === vEdit.default_provider) tags.push(["默认", "blue"]);
+    if (p.id === vEdit.project.provider) tags.push(["本项目", "green"]);
+    pl.appendChild(plistRow(p.name || p.url, tags, n === vSelP, () => { vSelP = n; $("pv-test-out").textContent = ""; renderVlm(); }));
+  });
+  const p = vEdit.providers[vSelP];
+  $("pv-form").querySelectorAll("input, button").forEach(node => { if (node.id !== "proj-provider") node.disabled = !p; });
+  PV_FIELDS.forEach(key => { $("pv-" + key).value = p ? (p[key] ?? "") : ""; });
+  const sel = $("proj-provider");
+  sel.innerHTML = "";
+  const follow = document.createElement("option");
+  follow.value = "";
+  follow.textContent = "跟随默认接口";
+  sel.appendChild(follow);
+  vEdit.providers.forEach(row => {
+    const opt = document.createElement("option");
+    opt.value = row.id;
+    opt.textContent = row.name;
+    sel.appendChild(opt);
+  });
+  sel.value = vEdit.project.provider || "";
+
+  const ql = $("pr-list");
+  ql.innerHTML = "";
+  const prompts = vEdit.project.prompts;
+  if (!prompts.length) ql.innerHTML = "<div class='empty'>这个项目还没有提示词，点「新增」从模板创建</div>";
+  prompts.forEach((q, n) => {
+    const tags = [[{text: "文字", json: "问答", boxes: "检测框"}[q.format] || q.format, ""]];
+    if (q.batch) tags.push(["批量", "green"]);
+    ql.appendChild(plistRow(q.name || q.question, tags, n === vSelQ, () => { vSelQ = n; renderVlm(); }));
+  });
+  const q = prompts[vSelQ];
+  $("pr-form").querySelectorAll("input, select, textarea, button").forEach(node => { node.disabled = !q; });
+  PR_FIELDS.forEach(key => { $("pr-" + key).value = q ? (q[key] ?? "") : ""; });
+  $("pr-batch").checked = !!(q && q.batch);
+  syncPromptForm();
+  $("pr-try").disabled = !q || index < 0;
+  $("pr-try").title = index < 0 ? "先在主界面打开一张图片" : "";
+}
+function syncPromptForm() {
+  const boxes = $("pr-format").value === "boxes";
+  $("pr-coords-wrap").style.display = boxes ? "" : "none";
+  $("pr-batch-wrap").style.display = boxes ? "none" : "";
+}
+function numberField(key) { return ["temperature", "max_tokens", "timeout", "image_side"].includes(key); }
+PV_FIELDS.forEach(key => {
+  $("pv-" + key).addEventListener("input", () => {
+    const p = vEdit && vEdit.providers[vSelP];
+    if (!p) return;
+    const raw = $("pv-" + key).value;
+    p[key] = numberField(key) ? (raw === "" ? "" : Number(raw)) : raw;
+    if (key === "name") renderVlmKeepFocus("pv-name");
+  });
+});
+PR_FIELDS.forEach(key => {
+  $("pr-" + key).addEventListener("input", () => {
+    const q = vEdit && vEdit.project.prompts[vSelQ];
+    if (!q) return;
+    const raw = $("pr-" + key).value;
+    q[key] = key === "max_tokens" ? Number(raw || 0) : raw;
+    if (key === "format") { syncPromptForm(); renderVlmKeepFocus("pr-format"); }
+    if (key === "name") renderVlmKeepFocus("pr-name");
+  });
+});
+$("pr-batch").onchange = () => {
+  const q = vEdit.project.prompts[vSelQ];
+  if (q) { q.batch = $("pr-batch").checked; renderVlm(); }
+};
+function renderVlmKeepFocus(id) {
+  const el = $(id);
+  const pos = el.selectionStart;
+  renderVlm();
+  el.focus();
+  try { if (pos != null) el.setSelectionRange(pos, pos); } catch (err) { /* select 元素没有光标 */ }
+}
+$("pr-form").addEventListener("click", event => {
+  const code = event.target.closest("code");
+  if (!code) return;
+  const area = $("pr-question");
+  if (area.disabled) return;
+  const pos = area.selectionStart ?? area.value.length;
+  area.value = area.value.slice(0, pos) + code.textContent + area.value.slice(area.selectionEnd ?? pos);
+  area.dispatchEvent(new Event("input"));
+  area.focus();
+  area.setSelectionRange(pos + code.textContent.length, pos + code.textContent.length);
+});
+$("proj-provider").onchange = () => { vEdit.project.provider = $("proj-provider").value; renderVlm(); };
+$("pv-add").onclick = () => {
+  const base = vEdit.providers[vSelP];
+  vEdit.providers.push({
+    id: "p" + Date.now(), name: "新接口", url: base ? base.url : "http://127.0.0.1:8091/v1", model: "", key: "",
+    temperature: 0.2, max_tokens: 512, timeout: 180, image_side: 1024
+  });
+  if (!vEdit.default_provider) vEdit.default_provider = vEdit.providers[0].id;
+  vSelP = vEdit.providers.length - 1;
+  renderVlm();
+  $("pv-name").focus();
+  $("pv-name").select();
+};
+$("pv-del").onclick = () => {
+  const p = vEdit.providers[vSelP];
+  if (!p || !confirm("删除接口「" + p.name + "」？所有项目都会受影响。")) return;
+  vEdit.providers.splice(vSelP, 1);
+  if (vEdit.default_provider === p.id) vEdit.default_provider = vEdit.providers.length ? vEdit.providers[0].id : null;
+  if (vEdit.project.provider === p.id) vEdit.project.provider = "";
+  vSelP = Math.max(0, vSelP - 1);
+  renderVlm();
+};
+$("pv-default").onclick = () => {
+  const p = vEdit.providers[vSelP];
+  if (p) { vEdit.default_provider = p.id; renderVlm(); }
+};
+$("pv-test").onclick = async () => {
+  const p = vEdit.providers[vSelP];
+  if (!p) return;
+  const out = $("pv-test-out");
+  out.textContent = "正在连接…";
+  try {
+    const res = await postJSON("/api/vlm/test", {provider: p});
+    const data = await res.json();
+    if (!res.ok) { out.textContent = "✗ " + (data.error || res.status); return; }
+    const dl = $("pv-models");
+    dl.innerHTML = "";
+    data.models.forEach(m => { const o = document.createElement("option"); o.value = m; dl.appendChild(o); });
+    out.textContent = "✓ 连接正常（" + data.ms + " ms）" + (data.models.length ? "，可用模型：" + data.models.join("、") : "");
+    if (!p.model && data.models.length) { p.model = data.models[0]; renderVlm(); }
+  } catch (err) {
+    out.textContent = "✗ " + err;
+  }
+};
+(() => {
+  const menu = $("pr-templates");
+  PROMPT_TEMPLATES.forEach((tpl, n) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.n = n;
+    btn.textContent = tpl.name;
+    li.appendChild(btn);
+    menu.appendChild(li);
+  });
+})();
+bindMenu("pr-add", item => {
+  const tpl = PROMPT_TEMPLATES[Number(item.dataset.n)];
+  vEdit.project.prompts.push({
+    id: "q" + Date.now(), name: tpl.name === "空白" ? "新提示词" : tpl.name, kind: tpl.kind, system: "",
+    question: tpl.question, format: tpl.format, coords: tpl.coords || "qwen1000", batch: !!tpl.batch, max_tokens: tpl.max_tokens || 0
+  });
+  vSelQ = vEdit.project.prompts.length - 1;
+  renderVlm();
+  $("pr-question").focus();
+});
+$("pr-dup").onclick = () => {
+  const q = vEdit.project.prompts[vSelQ];
+  if (!q) return;
+  vEdit.project.prompts.splice(vSelQ + 1, 0, {...q, id: "q" + Date.now(), name: q.name + " 副本", batch: false});
+  vSelQ += 1;
+  renderVlm();
+};
+$("pr-up").onclick = () => {
+  if (vSelQ <= 0) return;
+  const list = vEdit.project.prompts;
+  [list[vSelQ - 1], list[vSelQ]] = [list[vSelQ], list[vSelQ - 1]];
+  vSelQ -= 1;
+  renderVlm();
+};
+$("pr-del").onclick = () => {
+  const q = vEdit.project.prompts[vSelQ];
+  if (!q || !confirm("删除提示词「" + q.name + "」？")) return;
+  vEdit.project.prompts.splice(vSelQ, 1);
+  vSelQ = Math.max(0, vSelQ - 1);
+  renderVlm();
+};
+$("pr-try").onclick = async () => {
+  const q = vEdit.project.prompts[vSelQ];
+  if (!q || index < 0) return;
+  const pid = vEdit.project.provider || vEdit.default_provider;
+  const provider = vEdit.providers.find(p => p.id === pid) || vEdit.providers[vSelP];
+  if (!provider) { vMsg("先添加一个接口", "err"); return; }
+  const out = $("vt-out");
+  out.textContent = "正在用「" + provider.name + "」跑 " + items[index].name + " …";
+  $("pr-try").disabled = true;
+  try {
+    const res = await postJSON("/api/vlm/run", {name: items[index].name, prompt: q, provider, shapes: saved.map(plainShape)});
+    const data = await res.json();
+    if (!res.ok) { out.textContent = "✗ " + (data.error || res.status); return; }
+    let text = "用时 " + (data.ms / 1000).toFixed(1) + " 秒 · " + provider.name + "\n\n—— 模型原始输出 ——\n" + data.raw;
+    if (q.format === "boxes") {
+      text += "\n\n—— 解析出 " + data.boxes.length + " 个框（像素坐标）——\n" + data.boxes.map(b => b.label + "  [" + b.box.join(", ") + "]").join("\n");
+      if (data.boxes.length) { showCandidateBoxes(data.boxes); text += "\n\n已画在当前图片上作为候选框，关闭窗口后按 F 确认。"; }
+    } else {
+      text += "\n\n—— 解析结果 ——\n" + data.items.map((it, n) => (n + 1) + ". 问：" + it.question + "\n   答：" + it.answer).join("\n");
+    }
+    out.textContent = text;
+  } catch (err) {
+    out.textContent = "✗ " + err;
+  } finally {
+    $("pr-try").disabled = false;
+  }
+};
+$("vlm-save").onclick = async () => {
+  vMsg("正在保存…");
+  const res = await postJSON("/api/vlm/config", vEdit);
+  const data = await res.json();
+  if (!res.ok) { vMsg(data.error || "保存失败", "err"); return; }
+  vEdit = JSON.parse(JSON.stringify(data));
+  vSelP = Math.min(vSelP, Math.max(0, vEdit.providers.length - 1));
+  vSelQ = Math.min(vSelQ, Math.max(0, vEdit.project.prompts.length - 1));
+  renderVlm();
+  vMsg("已保存", "ok");
+  await loadVlmConfig();
+  $("gen-progress").textContent = "";
+  pollGen();
+};
+
+syncHint();
+renderShapes();
+renderTexts();
+loadModels();
+showProjects();
+</script>
+</body>
+</html>

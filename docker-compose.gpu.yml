@@ -1,0 +1,58 @@
+# GPU 版：叠加在 docker-compose.yml 之上。
+# 需要宿主机装好 NVIDIA 驱动和 NVIDIA Container Toolkit（并执行过 nvidia-ctk runtime configure）。
+# 本地多模态大模型（vlm）在 profile "vlm" 里：.env 里填了 VLM_MODEL，deploy.sh 才会启动它。
+# vlm 和 web 用同一个镜像（里面编译好了 llama-server），不额外下载 llama.cpp 镜像。
+services:
+  web:
+    build:
+      target: gpu
+      args:
+        TORCH_INDEX: ${TORCH_INDEX_GPU:-https://download.pytorch.org/whl/cu124}
+        CUDA_ARCHS: ${CUDA_ARCHS:-75;80;86;89;90}
+        CUDA_APT_REPO: ${CUDA_APT_REPO:-https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64}
+    image: label-web:gpu
+    runtime: nvidia
+    environment:
+      LABEL_DEVICE: cuda
+      NVIDIA_VISIBLE_DEVICES: ${WEB_GPU:-0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+  vlm:
+    profiles: ["vlm"]
+    image: label-web:gpu
+    pull_policy: never
+    runtime: nvidia
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        export LD_LIBRARY_PATH=$$LLAMA_LD_PATH;
+        exec /opt/llama/llama-server
+        -m "/models/$$VLM_MODEL"
+        $${VLM_MMPROJ:+--mmproj /models/$$VLM_MMPROJ}
+        $${VLM_LORA:+--lora /lora/$$VLM_LORA}
+        --alias "$$VLM_ALIAS"
+        --host 0.0.0.0 --port 8080
+        -c "$$VLM_CTX" -ngl "$$VLM_NGL"
+        --parallel "$$VLM_PARALLEL" --jinja
+        $$VLM_EXTRA_ARGS
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${VLM_GPU:-0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      VLM_MODEL: ${VLM_MODEL:-}
+      VLM_MMPROJ: ${VLM_MMPROJ:-}
+      VLM_LORA: ${VLM_LORA:-}
+      VLM_ALIAS: ${VLM_ALIAS:-local-vlm}
+      VLM_CTX: ${VLM_CTX:-4096}
+      VLM_NGL: ${VLM_NGL:-99}
+      VLM_PARALLEL: ${VLM_PARALLEL:-1}
+      VLM_EXTRA_ARGS: ${VLM_EXTRA_ARGS:-}
+    volumes:
+      - ${VLM_MODEL_DIR:-./data/models}:/models:ro
+      - ${VLM_LORA_DIR:-./data/models}:/lora:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 3
+    restart: unless-stopped

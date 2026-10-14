@@ -1,0 +1,53 @@
+diff --git a/sam3/model/sam3_image_processor.py b/sam3/model/sam3_image_processor.py
+index f8439f5..bb481f1 100644
+--- a/sam3/model/sam3_image_processor.py
++++ b/sam3/model/sam3_image_processor.py
+@@ -202,19 +202,25 @@ class Sam3Processor:
+         out_bbox = out_bbox[keep]
+ 
+         # convert to [x0, y0, x1, y1] format
+-        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
++        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox).detach().float().cpu()
++        out_probs = out_probs.detach().float().cpu()
++        out_masks = out_masks.detach().float().cpu()
++        del outputs
+ 
+         img_h = state["original_height"]
+         img_w = state["original_width"]
+-        scale_fct = torch.tensor([img_w, img_h, img_w, img_h]).to(self.device)
++        scale_fct = torch.tensor([img_w, img_h, img_w, img_h])
+         boxes = boxes * scale_fct[None, :]
+ 
+-        out_masks = interpolate(
+-            out_masks.unsqueeze(1),
+-            (img_h, img_w),
+-            mode="bilinear",
+-            align_corners=False,
+-        ).sigmoid()
++        if out_masks.numel():
++            out_masks = interpolate(
++                out_masks.unsqueeze(1),
++                (img_h, img_w),
++                mode="bilinear",
++                align_corners=False,
++            ).sigmoid()
++        else:
++            out_masks = out_masks.new_zeros((0, 1, img_h, img_w))
+ 
+         state["masks_logits"] = out_masks
+         state["masks"] = out_masks > 0.5
+diff --git a/sam3/perflib/fused.py b/sam3/perflib/fused.py
+index 6800cca..6c9316e 100644
+--- a/sam3/perflib/fused.py
++++ b/sam3/perflib/fused.py
+@@ -18,8 +18,8 @@ def addmm_act(activation, linear, mat1):
+     mat1_flat = mat1.view(-1, mat1.shape[-1])
+     if activation in [torch.nn.functional.relu, torch.nn.ReLU]:
+         y = addmm_act_op(self, mat1_flat, mat2.t(), beta=1, alpha=1, use_gelu=False)
+-        return y.view(mat1.shape[:-1] + (y.shape[-1],))
++        return y.view(mat1.shape[:-1] + (y.shape[-1],)).to(linear.weight.dtype)
+     if activation in [torch.nn.functional.gelu, torch.nn.GELU]:
+         y = addmm_act_op(self, mat1_flat, mat2.t(), beta=1, alpha=1, use_gelu=True)
+-        return y.view(mat1.shape[:-1] + (y.shape[-1],))
++        return y.view(mat1.shape[:-1] + (y.shape[-1],)).to(linear.weight.dtype)
+     raise ValueError(f"Unexpected activation {activation}")

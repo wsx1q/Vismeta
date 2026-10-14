@@ -1,0 +1,1193 @@
+import gc
+import json
+import os
+import shutil
+import threading
+import time
+import traceback
+from pathlib import Path
+
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+import cv2
+import numpy as np
+try:
+    import torch
+except ImportError:  # CPU 版镜像不带 torch，只能用 ONNX 模型和手画
+    torch = None
+from flask import Flask, abort, jsonify, request, send_file
+from PIL import Image
+
+import config
+
+DATA_ROOT = config.DATA_ROOT
+PROJECTS_FILE = DATA_ROOT / "projects.json"
+PROJECTS_DIR = DATA_ROOT / "projects"
+SAM3_CKPT = config.SAM3_CKPT
+SAM_DEVICE = config.torch_device()
+SAM3_ON = config.sam3_enabled(SAM_DEVICE)
+EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+app = Flask(__name__, static_folder="static")
+# 本地导入一次可能带很多文件；放宽 multipart 限制，避免 413。
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024 * 1024
+app.config["MAX_FORM_PARTS"] = 20000
+app.config["MAX_FORM_MEMORY_SIZE"] = 64 * 1024 * 1024
+LOCK = threading.Lock()
+
+STATE = {
+    "model": None,
+    "sam3_model": None,
+    "sam3_processor": None,
+    "image_key": None,
+    "sam3_error": None,
+}
+
+
+def load_projects():
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    if not PROJECTS_FILE.is_file():
+        save_projects([])
+        return []
+    data = json.loads(PROJECTS_FILE.read_text(encoding="utf-8"))
+    rows = [item for item in (data.get("projects") or []) if item.get("id") != "default"]
+    if rows != (data.get("projects") or []):
+        save_projects(rows)
+    for item in rows:
+        # 项目目录跟着数据目录走：数据目录换了挂载位置（比如进了容器）也能找到。
+        root = PROJECTS_DIR / item["id"]
+        if root.is_dir():
+            item["images"] = str(root / "images")
+            item["annotations"] = str(root / "annotations")
+            item["labels"] = str(root / "labels.json")
+    return rows
+
+
+def save_projects(rows):
+    PROJECTS_FILE.write_text(json.dumps({"projects": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def find_project(pid):
+    for item in load_projects():
+        if item.get("id") == pid:
+            return item
+    return None
+
+
+def current_project():
+    pid = (request.headers.get("X-Project") or request.args.get("project") or "default").strip()
+    item = find_project(pid)
+    if not item:
+        abort(404, "项目不存在")
+    return item
+
+
+def read_doc(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def scan_annotations(ann_root):
+    """返回 {stem: {"labeled": bool, "text": none|pending|approved|rejected}}"""
+    import texts
+    found = {}
+    if not ann_root.is_dir():
+        return found
+    for path in ann_root.glob("*.json"):
+        data = read_doc(path)
+        if data is None:
+            continue
+        found[path.stem] = {
+            "labeled": bool(data.get("shapes")),
+            "text": texts.text_status(data),
+        }
+    return found
+
+
+def labeled_stems(ann_root):
+    return {stem for stem, info in scan_annotations(ann_root).items() if info["labeled"]}
+
+
+def project_stats(item):
+    images = Path(item["images"])
+    anns = Path(item["annotations"])
+    files = []
+    if images.is_dir():
+        files = [p for p in images.iterdir() if p.is_file() and p.suffix.lower() in EXTS]
+    annotated = 0
+    shapes = 0
+    for path in files:
+        target = anns / (path.stem + ".json")
+        if not target.is_file():
+            continue
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        count = len(data.get("shapes") or [])
+        if count:
+            annotated += 1
+            shapes += count
+    return {"images": len(files), "annotated": annotated, "shapes": shapes}
+
+
+def unique_dest(root, name):
+    dest = root / name
+    if not dest.exists():
+        return dest
+    stem, ext = Path(name).stem, Path(name).suffix
+    n = 2
+    while True:
+        cand = root / f"{stem}_{n}{ext}"
+        if not cand.exists():
+            return cand
+        n += 1
+
+
+def copy_image(src, root):
+    dest = unique_dest(root, src.name)
+    if src.resolve() == dest.resolve():
+        return None
+    shutil.copy2(src, dest)
+    return dest.name
+
+
+def safe_image(name):
+    filename = Path(str(name)).name
+    if not filename or Path(filename).suffix.lower() not in EXTS:
+        abort(400)
+    root = Path(current_project()["images"]).resolve()
+    path = (root / filename).resolve()
+    if path.parent != root or not path.is_file():
+        abort(404)
+    return path
+
+
+def ann_path(image_path):
+    root = Path(current_project()["annotations"])
+    root.mkdir(parents=True, exist_ok=True)
+    return root / (image_path.stem + ".json")
+
+
+def polygons_from_mask(mask):
+    values = np.asarray(mask)
+    if values.ndim == 3:
+        values = values[0]
+    binary = (values > 0).astype(np.uint8)
+    if binary.max() == 0:
+        return []
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    polygons = []
+    for contour in contours:
+        if cv2.contourArea(contour) < 80:
+            continue
+        epsilon = max(1.0, 0.0015 * cv2.arcLength(contour, True))
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        points = [[int(x), int(y)] for x, y in approx.reshape(-1, 2)]
+        if len(points) >= 3:
+            polygons.append(points)
+    return polygons
+
+
+def box_from_mask(mask):
+    binary = np.asarray(mask)
+    if binary.ndim == 3:
+        binary = binary[0]
+    ys, xs = np.where(binary > 0)
+    if len(xs) == 0:
+        return None
+    return [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+
+def release_cuda():
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def clone_tensors(value):
+    if torch.is_tensor(value):
+        return value.detach().clone()
+    if isinstance(value, dict):
+        return {key: clone_tensors(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [clone_tensors(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(clone_tensors(item) for item in value)
+    return value
+
+
+def free_models():
+    STATE["sam3_model"] = None
+    STATE["sam3_processor"] = None
+    STATE["sam3_state"] = None
+    STATE["sam3_text_state"] = None
+    STATE["sam3_text_key"] = None
+    STATE["sam3_epoch"] = 0
+    STATE["image_key"] = None
+    STATE["model"] = None
+    release_cuda()
+
+
+def load_sam3():
+    if STATE["model"] == "sam3" and STATE["sam3_processor"] is not None:
+        return
+    if not SAM3_ON:
+        STATE["sam3_error"] = "SAM3 需要 GPU（当前是 CPU 模式）"
+        raise RuntimeError(STATE["sam3_error"])
+    free_models()
+    try:
+        from sam3.model_builder import build_sam3_image_model
+        from sam3.model.sam3_image_processor import Sam3Processor
+    except Exception as exc:
+        STATE["sam3_error"] = "SAM3 代码没装好：" + str(exc)
+        raise RuntimeError(STATE["sam3_error"]) from exc
+    if not SAM3_CKPT.is_file():
+        message = "把 SAM3 权重放到 " + str(SAM3_CKPT)
+        STATE["sam3_error"] = message
+        free_models()
+        raise RuntimeError(message)
+    try:
+        if SAM_DEVICE.startswith("cuda"):
+            torch.cuda.set_device(torch.device(SAM_DEVICE))
+        model = build_sam3_image_model(
+            device=SAM_DEVICE,
+            enable_inst_interactivity=True,
+            checkpoint_path=str(SAM3_CKPT),
+            load_from_HF=False,
+        )
+        model.to(SAM_DEVICE)
+        model.eval()
+    except Exception as exc:
+        message = "SAM3 权重读取失败：" + str(exc)
+        STATE["sam3_error"] = message
+        free_models()
+        raise RuntimeError(message) from exc
+    STATE["sam3_model"] = model
+    STATE["sam3_processor"] = Sam3Processor(model, device=SAM_DEVICE, confidence_threshold=0.4)
+    STATE["model"] = "sam3"
+    STATE["sam3_error"] = None
+
+
+def ensure(model_name):
+    if model_name in {"sam3", "pytorch-sam3"}:
+        load_sam3()
+    else:
+        raise RuntimeError("这个运行时不用 SAM3 权重")
+
+
+def read_rgb(path):
+    with Image.open(path) as image:
+        rgb = image.convert("RGB")
+        width, height = rgb.size
+        array = np.array(rgb)
+    return array, width, height
+
+
+def cache_image(kind, path, array):
+    return
+
+
+def sam3_state(path, array):
+    key = ("sam3", str(path), path.stat().st_mtime)
+    if STATE["image_key"] == key and STATE.get("sam3_state") is not None:
+        return STATE["sam3_state"]
+    with torch.inference_mode():
+        state = STATE["sam3_processor"].set_image(Image.fromarray(array))
+    STATE["sam3_state"] = state
+    STATE["image_key"] = key
+    return state
+
+
+def sam3_interactive(path, points, box, output, confidence):
+    ensure("sam3")
+    if STATE["sam3_model"].inst_interactive_predictor is None:
+        raise RuntimeError("这份 SAM3 没有点选头")
+    array, width, height = read_rgb(path)
+    state = sam3_state(path, array)
+    point_coords = None
+    point_labels = None
+    if points:
+        point_coords = np.array([[p["x"], p["y"]] for p in points], dtype=np.float32)
+        point_labels = np.array([1 if p.get("positive", True) else 0 for p in points], dtype=np.int32)
+    box_arr = np.array(box, dtype=np.float32) if box else None
+    multi = bool(points) and len(points) == 1 and box_arr is None
+    isolated = {
+        "original_height": state["original_height"],
+        "original_width": state["original_width"],
+        "backbone_out": {
+            "sam2_backbone_out": state["backbone_out"]["sam2_backbone_out"],
+        },
+    }
+    with torch.inference_mode():
+        masks, scores, _ = STATE["sam3_model"].predict_inst(
+            isolated,
+            point_coords=point_coords,
+            point_labels=point_labels,
+            box=box_arr,
+            multimask_output=multi,
+        )
+    best = int(np.argmax(scores))
+    score = float(scores[best])
+    kept = [masks[best]] if score >= confidence else []
+    if kept:
+        STATE["sam3_epoch"] = STATE.get("sam3_epoch", 0) + 1
+    return pack_output(output, width, height, kept, None)
+
+
+def sam3_text(path, text, box, output, confidence):
+    ensure("sam3")
+    array, width, height = read_rgb(path)
+    processor = STATE["sam3_processor"]
+    processor.confidence_threshold = confidence
+    # 点选会把部分权重转成 bfloat16，不能复用点选之前缓存的图像特征。
+    text_key = ("sam3-text", str(path), path.stat().st_mtime, STATE.get("sam3_epoch", 0))
+    cached = STATE.get("sam3_text_state") if STATE.get("sam3_text_key") == text_key else None
+    if cached is None:
+        with torch.inference_mode():
+            cached = processor.set_image(Image.fromarray(array))
+        STATE["sam3_text_state"] = cached
+        STATE["sam3_text_key"] = text_key
+    trimmed = {key: value for key, value in cached["backbone_out"].items() if key != "sam2_backbone_out"}
+    state = {
+        "original_height": cached["original_height"],
+        "original_width": cached["original_width"],
+        "backbone_out": clone_tensors(trimmed),
+    }
+    with torch.inference_mode():
+        if text:
+            state = processor.set_text_prompt(text, state)
+        if box:
+            x1, y1, x2, y2 = box
+            cx = ((x1 + x2) / 2.0) / width
+            cy = ((y1 + y2) / 2.0) / height
+            bw = abs(x2 - x1) / width
+            bh = abs(y2 - y1) / height
+            state = processor.add_geometric_prompt([cx, cy, bw, bh], True, state)
+    masks = state.get("masks")
+    boxes = state.get("boxes")
+    mask_list = []
+    box_list = []
+    if masks is not None:
+        data = masks.detach().float().cpu().numpy()
+        for mask in data:
+            mask_list.append(mask)
+    if boxes is not None:
+        box_list = [[float(v) for v in row] for row in boxes.detach().float().cpu().numpy()]
+    return pack_output(output, width, height, mask_list, box_list)
+
+
+def pack_output(output, width, height, masks, boxes):
+    polygons = []
+    result_boxes = []
+    if output == "box" and boxes:
+        for box in boxes:
+            x1, y1, x2, y2 = box
+            result_boxes.append([int(x1), int(y1), int(x2), int(y2)])
+    else:
+        for mask in masks:
+            if output == "box":
+                box = box_from_mask(mask)
+                if box:
+                    result_boxes.append(box)
+            else:
+                polygons.extend(polygons_from_mask(mask))
+    return {"width": width, "height": height, "output": output, "polygons": polygons, "boxes": result_boxes}
+
+
+@app.get("/")
+def index():
+    response = app.send_static_file("index.html")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/health")
+def health():
+    sam3_code = False
+    try:
+        import sam3  # noqa: F401
+        sam3_code = True
+    except Exception as exc:
+        STATE["sam3_error"] = str(exc)
+    vram = None
+    if SAM_DEVICE.startswith("cuda"):
+        vram = round(torch.cuda.memory_allocated(torch.device(SAM_DEVICE)) / (1024 * 1024))
+    return jsonify({
+        "ok": True,
+        "device": SAM_DEVICE,
+        "ready_model": STATE["model"],
+        "sam3": SAM3_CKPT.is_file(),
+        "sam3_enabled": SAM3_ON,
+        "sam3_resident": STATE.get("sam3_processor") is not None,
+        "sam3_device": SAM_DEVICE,
+        "sam3_vram_mb": vram,
+        "sam3_error": STATE["sam3_error"],
+    })
+
+
+@app.post("/api/load")
+def load_model():
+    import catalog
+    name = (request.get_json(force=True) or {}).get("model") or ""
+    spec = catalog.get_model(name)
+    if not spec:
+        return jsonify({"ok": False, "error": "没有这个模型"}), 404
+    if not spec.get("ready"):
+        return jsonify({"ok": False, "error": catalog.missing_message(spec)}), 400
+    if spec["runtime"] != "pytorch-sam3":
+        return jsonify({"ok": True, "model": spec["id"]})
+    try:
+        with LOCK:
+            ensure("sam3")
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "model": STATE["model"]})
+
+
+@app.get("/api/models")
+def models():
+    import catalog
+    return jsonify({"models": catalog.list_models(), "runtimes": sorted(catalog.RUNTIMES)})
+
+
+@app.post("/api/models")
+def import_model():
+    import catalog
+    try:
+        pack = catalog.save_pack(request.get_json(force=True) or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(pack)
+
+
+@app.get("/api/images")
+def images():
+    proj = current_project()
+    image_root = Path(proj["images"])
+    ann_root = Path(proj["annotations"])
+    query = request.args.get("q", "").strip().lower()
+    offset = max(0, int(request.args.get("offset", 0)))
+    limit = min(50000, max(1, int(request.args.get("limit", 80))))
+    text_filter = request.args.get("t", "").strip()
+    shape_filter = request.args.get("s", "").strip()
+    info = scan_annotations(ann_root)
+    names = []
+    if not image_root.is_dir():
+        return jsonify({"total": 0, "done": 0, "items": [], "focus": -1, "texts": {}})
+    for path in sorted(image_root.iterdir()):
+        if path.suffix.lower() not in EXTS:
+            continue
+        if query and query not in path.name.lower():
+            continue
+        state = info.get(path.stem) or {"labeled": False, "text": "none"}
+        if text_filter and state["text"] != text_filter:
+            continue
+        if shape_filter and state["labeled"] != (shape_filter == "yes"):
+            continue
+        names.append((path, state))
+    focus = request.args.get("focus", "").strip()
+    if focus:
+        pos = next((i for i, (path, _) in enumerate(names) if path.name == focus), -1)
+        if pos >= 0:
+            offset = (pos // limit) * limit
+    page = names[offset:offset + limit]
+    focus_index = next((i for i, (path, _) in enumerate(page) if path.name == focus), -1)
+    counts = {"none": 0, "pending": 0, "approved": 0, "rejected": 0}
+    for _, state in names:
+        counts[state["text"]] = counts.get(state["text"], 0) + 1
+    return jsonify({
+        "total": len(names),
+        "done": sum(1 for _, state in names if state["labeled"]),
+        "focus": focus_index,
+        "texts": counts,
+        "items": [{"name": p.name, "saved": state["labeled"], "text": state["text"]} for p, state in page],
+    })
+
+
+@app.get("/api/image/<path:name>")
+def image_file(name):
+    path = safe_image(name)
+    response = send_file(path)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def labels_path():
+    return Path(current_project()["labels"])
+
+
+def _read_labels():
+    path = labels_path()
+    if not path.is_file():
+        return [], True
+    data = json.loads(path.read_text(encoding="utf-8"))
+    labels = []
+    seen = set()
+    for item in data.get("labels") or []:
+        name = str(item.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        labels.append({"name": name, "locked": bool(item.get("locked"))})
+    return labels, False
+
+
+@app.get("/api/labels")
+def get_labels():
+    labels, fresh = _read_labels()
+    return jsonify({"labels": labels, "fresh": fresh})
+
+
+@app.post("/api/labels")
+def save_labels():
+    import json
+    body = request.get_json(force=True)
+    labels = []
+    seen = set()
+    for item in body.get("labels") or []:
+        name = str(item.get("name") or "").strip()[:64]
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        labels.append({"name": name, "locked": bool(item.get("locked"))})
+    path = labels_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"labels": labels}, ensure_ascii=False), encoding="utf-8")
+    return jsonify({"labels": labels})
+
+
+@app.get("/api/annotation/<path:name>")
+def get_annotation(name):
+    path = safe_image(name)
+    target = ann_path(path)
+    if not target.is_file():
+        return jsonify({"shapes": []})
+    import json
+    return jsonify(json.loads(target.read_text(encoding="utf-8")))
+
+
+@app.post("/api/segment")
+def segment():
+    import catalog
+    import runtimes
+    body = request.get_json(force=True)
+    path = safe_image(body.get("name", ""))
+    spec = catalog.get_model(body.get("model") or "")
+    if not spec or not spec.get("ready"):
+        return jsonify({"error": catalog.missing_message(spec) if spec else "没有这个模型"}), 400
+    output = "box" if body.get("output") == "box" else "mask"
+    if output not in spec["outputs"]:
+        return jsonify({"error": "这个模型没有这种结果"}), 400
+    points = body.get("points") or []
+    box = body.get("box")
+    text = (body.get("text") or "").strip()
+    if "text" not in spec["prompts"]:
+        text = ""
+    try:
+        confidence = min(1.0, max(0.0, float(body.get("confidence", spec["confidence"]["default"]))))
+    except (TypeError, ValueError):
+        confidence = spec["confidence"]["default"]
+    if not points and not box and not text:
+        abort(400)
+    try:
+        with LOCK:
+            if spec["runtime"] == "pytorch-sam3" and text and not points:
+                payload = sam3_text(path, text, box, output, confidence)
+            elif spec["runtime"] == "pytorch-sam3":
+                payload = sam3_interactive(path, points, box, output, confidence)
+            elif spec["runtime"] == "onnx-sam1":
+                array, width, height = read_rgb(path)
+                masks, scores = runtimes.ONNX.masks(array, points, box, spec["files"])
+                keep = []
+                if len(scores):
+                    best = int(np.argmax(scores))
+                    if float(scores[best]) >= confidence:
+                        keep = [masks[best]]
+                payload = pack_output(output, width, height, keep, None)
+            elif spec["runtime"] == "tensorrt-sam":
+                array, width, height = read_rgb(path)
+                masks, scores = runtimes.TRT.masks(array, points, box, spec["files"])
+                keep = [masks[i] for i, score in enumerate(scores) if float(score) >= confidence][:1]
+                payload = pack_output(output, width, height, keep, None)
+            else:
+                return jsonify({"error": "不认识的运行时 " + spec["runtime"]}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(payload)
+
+
+@app.post("/api/save")
+def save():
+    import json
+    body = request.get_json(force=True)
+    path = safe_image(body.get("name", ""))
+    with Image.open(path) as image:
+        width, height = image.size
+    shapes = []
+    for shape in body.get("shapes") or []:
+        kind = shape.get("shape_type") or "polygon"
+        points = shape.get("points") or []
+        raw_flags = shape.get("flags") or {}
+        flags = {}
+        if shape.get("locked") or raw_flags.get("locked"):
+            flags["locked"] = True
+        if kind == "rectangle" and len(points) >= 2:
+            shapes.append({
+                "label": shape.get("label") or "目标",
+                "points": [[float(points[0][0]), float(points[0][1])], [float(points[1][0]), float(points[1][1])]],
+                "group_id": None,
+                "shape_type": "rectangle",
+                "flags": flags,
+            })
+        elif len(points) >= 3:
+            shapes.append({
+                "label": shape.get("label") or "目标",
+                "points": [[float(x), float(y)] for x, y in points],
+                "group_id": None,
+                "shape_type": "polygon",
+                "flags": flags,
+            })
+    target = ann_path(path)
+    old = read_doc(target) if target.is_file() else None
+    document = {
+        "version": "2.4.0",
+        "flags": {},
+        "shapes": shapes,
+        "imagePath": path.name,
+        "imageData": None,
+        "imageHeight": height,
+        "imageWidth": width,
+    }
+    if old and old.get("texts"):
+        document["texts"] = old["texts"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    return jsonify({"saved": str(target), "count": len(shapes)})
+
+
+@app.post("/api/texts/save")
+def save_texts():
+    import texts
+    body = request.get_json(force=True) or {}
+    path = safe_image(body.get("name", ""))
+    target = ann_path(path)
+    doc = read_doc(target) if target.is_file() else None
+    if doc is None:
+        doc = blank_doc(path)
+    items = texts.clean_items(body.get("items"))
+    old = doc.get("texts") or {}
+    doc["texts"] = {
+        "generator": old.get("generator"),
+        "generated_at": old.get("generated_at"),
+        "reviewed_at": int(time.time()),
+        "items": items,
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    return jsonify({"texts": doc["texts"], "status": texts.text_status(doc)})
+
+
+def blank_doc(image_path):
+    with Image.open(image_path) as image:
+        width, height = image.size
+    return {
+        "version": "2.4.0",
+        "flags": {},
+        "shapes": [],
+        "imagePath": image_path.name,
+        "imageData": None,
+        "imageHeight": height,
+        "imageWidth": width,
+    }
+
+
+def project_label_names(proj):
+    path = Path(proj["labels"])
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return [str(item.get("name")) for item in data.get("labels") or [] if item.get("name")]
+
+
+def prompt_context(proj, image_path, doc):
+    return {
+        "labels": project_label_names(proj),
+        "shapes": doc.get("shapes") or [],
+        "filename": image_path.name,
+        "width": doc.get("imageWidth"),
+        "height": doc.get("imageHeight"),
+    }
+
+
+def pick_prompts(proj, ids):
+    import texts
+    prompts = texts.project_settings(proj)["prompts"]
+    if ids:
+        wanted = set(ids)
+        return [p for p in prompts if p["id"] in wanted and p["format"] != "boxes"]
+    return [p for p in prompts if p["batch"]]
+
+
+@app.post("/api/texts/generate")
+def generate_texts():
+    """后台给项目里的图片生成文字。scope: missing（没有文字或被打回的）| all | one。"""
+    import texts
+    body = request.get_json(force=True) or {}
+    proj = current_project()
+    provider = texts.resolve_provider(proj, body.get("provider"))
+    if not provider:
+        return jsonify({"error": "还没有配置大模型接口，先到「大模型设置」里加一个"}), 400
+    prompts = pick_prompts(proj, body.get("prompts"))
+    if not prompts:
+        return jsonify({"error": "没有可用的提示词：到「大模型设置」里勾选「参与批量生成」"}), 400
+    image_root = Path(proj["images"])
+    ann_root = Path(proj["annotations"])
+    scope = body.get("scope") or "missing"
+    info = scan_annotations(ann_root)
+    tasks = []
+    if scope == "one":
+        path = safe_image(body.get("name", ""))
+        tasks.append((path, ann_path(path)))
+    else:
+        for path in sorted(image_root.iterdir()) if image_root.is_dir() else []:
+            if path.suffix.lower() not in EXTS:
+                continue
+            state = info.get(path.stem) or {"labeled": False, "text": "none"}
+            if scope == "missing" and state["text"] in {"pending", "approved"}:
+                continue
+            tasks.append((path, ann_root / (path.stem + ".json")))
+    if not tasks:
+        return jsonify({"ok": True, "queued": 0, "job": texts.job_state()})
+
+    def worker(image_path, target):
+        doc = read_doc(target) if target.is_file() else None
+        if doc is None:
+            doc = blank_doc(image_path)
+        context = prompt_context(proj, image_path, doc)
+        items = []
+        for prompt in prompts:
+            items.extend(texts.run_prompt(provider, prompt, image_path, context, track=True)["items"])
+        # 生成期间用户可能保存过，写盘前重新读一次，只换文字部分。
+        latest = read_doc(target) if target.is_file() else None
+        if latest is not None:
+            doc = latest
+        texts.merge_generated(doc, items, provider["name"], [p["id"] for p in prompts])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+    if not texts.start_job(proj["id"], tasks, worker):
+        return jsonify({"error": "后台还在生成，等它跑完再点"}), 409
+    return jsonify({"ok": True, "queued": len(tasks), "job": texts.job_state()})
+
+
+@app.get("/api/texts/status")
+def texts_status():
+    import texts
+    state = texts.job_state()
+    provider = None
+    try:
+        provider = texts.resolve_provider(current_project())
+    except Exception:
+        pass
+    state["generator"] = provider["name"] if provider else ""
+    return jsonify(state)
+
+
+@app.get("/api/vlm/config")
+def vlm_config():
+    import texts
+    proj = current_project()
+    return jsonify({
+        **texts.public_config(texts.load_config()),
+        "project": texts.project_settings(proj),
+    })
+
+
+@app.post("/api/vlm/config")
+def save_vlm_config():
+    """一次保存全局接口和当前项目的提示词。"""
+    import texts
+    body = request.get_json(force=True) or {}
+    proj = current_project()
+    try:
+        settings = texts.clean_project_settings(body.get("project") or {})
+        config = texts.save_config(body)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if settings["provider"] and not any(p["id"] == settings["provider"] for p in config["providers"]):
+        settings["provider"] = ""
+    rows = load_projects()
+    for row in rows:
+        if row.get("id") == proj["id"]:
+            row["vlm"] = settings
+    save_projects(rows)
+    return jsonify({**texts.public_config(config), "project": settings})
+
+
+def provider_from_body(body, proj):
+    """试运行时可以直接用编辑框里还没保存的接口。"""
+    import texts
+    raw = body.get("provider")
+    if isinstance(raw, dict):
+        old = next((p for p in texts.load_config()["providers"] if p["id"] == raw.get("id")), None)
+        return texts.clean_provider(raw, old)
+    return texts.resolve_provider(proj, raw)
+
+
+@app.post("/api/vlm/test")
+def test_vlm():
+    import texts
+    body = request.get_json(force=True) or {}
+    try:
+        provider = provider_from_body(body, current_project())
+        if not provider:
+            return jsonify({"error": "没有接口"}), 400
+        started = time.time()
+        models = texts.test_provider(provider)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "models": models, "ms": int((time.time() - started) * 1000)})
+
+
+@app.post("/api/vlm/run")
+def run_vlm():
+    """对一张图跑一条提示词，不写盘。prompt 可以是 id，也可以是编辑中的提示词对象。"""
+    import texts
+    body = request.get_json(force=True) or {}
+    proj = current_project()
+    path = safe_image(body.get("name", ""))
+    try:
+        provider = provider_from_body(body, proj)
+        if not provider:
+            return jsonify({"error": "还没有配置大模型接口"}), 400
+        raw_prompt = body.get("prompt")
+        if isinstance(raw_prompt, dict):
+            prompt = texts.clean_prompt(raw_prompt)
+        else:
+            prompt = next((p for p in texts.project_settings(proj)["prompts"] if p["id"] == raw_prompt), None)
+            if not prompt:
+                return jsonify({"error": "没有这条提示词"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    target = ann_path(path)
+    doc = read_doc(target) if target.is_file() else None
+    doc = doc or blank_doc(path)
+    if isinstance(body.get("shapes"), list):
+        doc["shapes"] = body["shapes"]
+    started = time.time()
+    try:
+        result = texts.run_prompt(provider, prompt, path, prompt_context(proj, path, doc))
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 502
+    result["ms"] = int((time.time() - started) * 1000)
+    result["generator"] = provider["name"]
+    result["prompt"] = prompt
+    return jsonify(result)
+
+
+def _iter_docs(proj):
+    image_root = Path(proj["images"])
+    ann_root = Path(proj["annotations"])
+    if not image_root.is_dir():
+        return
+    for path in sorted(image_root.iterdir()):
+        if path.suffix.lower() not in EXTS:
+            continue
+        target = ann_root / (path.stem + ".json")
+        doc = read_doc(target) if target.is_file() else None
+        if doc:
+            yield path, doc
+
+
+@app.get("/api/export/<kind>")
+def export(kind):
+    """vlm.jsonl：已通过的问答（LLaMA-Factory sharegpt 格式）；yolo.zip / labelme.zip：框和多边形。"""
+    import io
+    import zipfile
+    proj = current_project()
+    with_images = request.args.get("images") == "1"
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    if kind == "vlm.jsonl":
+        statuses = {"approved"} if request.args.get("all") != "1" else {"approved", "pending"}
+        lines = []
+        for path, doc in _iter_docs(proj):
+            for item in (doc.get("texts") or {}).get("items") or []:
+                if item.get("status") not in statuses:
+                    continue
+                lines.append(json.dumps({
+                    "messages": [
+                        {"role": "user", "content": "<image>" + item.get("question", "")},
+                        {"role": "assistant", "content": item.get("answer", "")},
+                    ],
+                    "images": [str(path)],
+                    "kind": item.get("kind") or "qa",
+                }, ensure_ascii=False))
+        data = io.BytesIO(("\n".join(lines) + ("\n" if lines else "")).encode("utf-8"))
+        return send_file(data, mimetype="application/jsonl", as_attachment=True,
+                         download_name="%s_vlm_%s.jsonl" % (proj["name"], stamp))
+    if kind not in {"yolo.zip", "labelme.zip"}:
+        abort(404)
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    tmp.close()
+    names = project_label_names(proj)
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path, doc in _iter_docs(proj):
+            shapes = doc.get("shapes") or []
+            if not shapes:
+                continue
+            if kind == "labelme.zip":
+                archive.writestr("annotations/" + path.stem + ".json", json.dumps(doc, ensure_ascii=False))
+            else:
+                w = float(doc.get("imageWidth") or 1)
+                h = float(doc.get("imageHeight") or 1)
+                rows = []
+                for shape in shapes:
+                    label = shape.get("label") or "目标"
+                    if label not in names:
+                        names.append(label)
+                    pts = shape.get("points") or []
+                    if not pts:
+                        continue
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    x1, x2 = max(0, min(xs)), min(w, max(xs))
+                    y1, y2 = max(0, min(ys)), min(h, max(ys))
+                    rows.append("%d %.6f %.6f %.6f %.6f" % (
+                        names.index(label), (x1 + x2) / 2 / w, (y1 + y2) / 2 / h, (x2 - x1) / w, (y2 - y1) / h))
+                archive.writestr("labels/" + path.stem + ".txt", "\n".join(rows) + "\n")
+            if with_images:
+                archive.write(path, "images/" + path.name)
+        if kind == "yolo.zip":
+            archive.writestr("classes.txt", "\n".join(names) + "\n")
+            archive.writestr("data.yaml", "path: .\ntrain: images\nval: images\nnames:\n" + "".join(
+                "  %d: %s\n" % (n, json.dumps(name, ensure_ascii=False)) for n, name in enumerate(names)))
+    response = send_file(tmp.name, mimetype="application/zip", as_attachment=True,
+                         download_name="%s_%s_%s" % (proj["name"], kind.replace(".zip", ""), stamp) + ".zip")
+    response.call_on_close(lambda: Path(tmp.name).unlink(missing_ok=True))
+    return response
+
+
+@app.post("/api/texts/stop")
+def texts_stop():
+    import texts
+    texts.stop_job()
+    return jsonify(texts.job_state())
+
+
+@app.get("/api/projects")
+def list_projects():
+    rows = []
+    for item in load_projects():
+        stats = project_stats(item)
+        rows.append({
+            "id": item["id"],
+            "name": item["name"],
+            "builtin": bool(item.get("builtin")),
+            **stats,
+        })
+    return jsonify({"projects": rows})
+
+
+@app.post("/api/projects")
+def create_project():
+    body = request.get_json(force=True) or {}
+    name = str(body.get("name") or "").strip()[:40]
+    if not name:
+        return jsonify({"error": "请填写项目名称"}), 400
+    rows = load_projects()
+    if any(item.get("name") == name for item in rows):
+        return jsonify({"error": "已经有同名项目"}), 400
+    pid = "p" + str(int(time.time() * 1000))
+    root = PROJECTS_DIR / pid
+    (root / "images").mkdir(parents=True, exist_ok=True)
+    (root / "annotations").mkdir(parents=True, exist_ok=True)
+    rows.append({
+        "id": pid,
+        "name": name,
+        "images": str(root / "images"),
+        "annotations": str(root / "annotations"),
+        "labels": str(root / "labels.json"),
+        "builtin": False,
+    })
+    save_projects(rows)
+    return jsonify({"id": pid, "name": name})
+
+
+@app.delete("/api/projects/<pid>")
+def delete_project(pid):
+    rows = load_projects()
+    item = next((row for row in rows if row.get("id") == pid), None)
+    if not item:
+        return jsonify({"error": "项目不存在"}), 404
+    if item.get("builtin") or pid == "default":
+        return jsonify({"error": "默认项目里是原来的图片，不能删除"}), 400
+    root = (PROJECTS_DIR / pid).resolve()
+    if root.parent == PROJECTS_DIR.resolve() and root.is_dir():
+        shutil.rmtree(root)
+    save_projects([row for row in rows if row.get("id") != pid])
+    return jsonify({"ok": True})
+
+
+ARCHIVE_EXTS = {".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar"}
+IMPORT_CAP = 20000
+
+
+def _extract_archive(tmp_path, filename, root, added, skipped):
+    """把压缩包里的图片解到项目目录。只认 zip / tar 系列。"""
+    import tarfile
+    import zipfile
+
+    def keep(entry_name):
+        inner = Path(entry_name.replace("\\", "/")).name
+        if not inner or inner.startswith(".") or "__MACOSX" in entry_name:
+            return None
+        return inner if Path(inner).suffix.lower() in EXTS else None
+
+    if zipfile.is_zipfile(tmp_path):
+        with zipfile.ZipFile(tmp_path) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                inner = keep(info.filename)
+                if not inner:
+                    skipped[0] += 1
+                    continue
+                if len(added) >= IMPORT_CAP:
+                    break
+                dest = unique_dest(root, inner)
+                with archive.open(info) as src, open(dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                added.append(dest.name)
+        return True
+    if tarfile.is_tarfile(tmp_path):
+        with tarfile.open(tmp_path) as archive:
+            for member in archive:
+                if not member.isfile():
+                    continue
+                inner = keep(member.name)
+                if not inner:
+                    skipped[0] += 1
+                    continue
+                if len(added) >= IMPORT_CAP:
+                    break
+                src = archive.extractfile(member)
+                if src is None:
+                    skipped[0] += 1
+                    continue
+                dest = unique_dest(root, inner)
+                with src, open(dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                added.append(dest.name)
+        return True
+    return False
+
+
+@app.post("/api/import/files")
+def import_files():
+    """multipart 上传。files 可以是图片，也可以是 zip / tar 压缩包，包里的图片会被解出来。"""
+    import tempfile
+    proj = current_project()
+    root = Path(proj["images"])
+    root.mkdir(parents=True, exist_ok=True)
+    added = []
+    skipped = [0]
+    bad_archives = []
+    for handle in request.files.getlist("files"):
+        name = Path((handle.filename or "").replace("\\", "/")).name
+        suffix = Path(name).suffix.lower()
+        if not name:
+            skipped[0] += 1
+            continue
+        if suffix in EXTS:
+            dest = unique_dest(root, name)
+            handle.save(dest)
+            added.append(dest.name)
+            continue
+        if suffix in ARCHIVE_EXTS or name.lower().endswith((".tar.gz", ".tar.bz2", ".tar.xz")):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".bin") as tmp:
+                handle.save(tmp)
+                tmp_path = Path(tmp.name)
+            try:
+                if not _extract_archive(tmp_path, name, root, added, skipped):
+                    bad_archives.append(name)
+            except Exception as exc:  # noqa: BLE001
+                bad_archives.append(name + "（" + str(exc) + "）")
+            finally:
+                tmp_path.unlink(missing_ok=True)
+            continue
+        skipped[0] += 1
+    payload = {"count": len(added), "skipped": skipped[0], "names": added[:30]}
+    if bad_archives:
+        payload["error_archives"] = bad_archives
+    return jsonify(payload)
+
+
+@app.post("/api/import/path")
+def import_server_path():
+    body = request.get_json(force=True) or {}
+    raw = str(body.get("path") or "").strip()
+    if not raw:
+        return jsonify({"error": "请填写服务器上的路径"}), 400
+    src = Path(raw).expanduser()
+    if not src.is_absolute():
+        return jsonify({"error": "请填绝对路径，例如 /data/images"}), 400
+    try:
+        src = src.resolve()
+    except Exception:
+        return jsonify({"error": "路径打不开"}), 400
+    if not src.exists():
+        return jsonify({"error": "路径不存在"}), 400
+    proj = current_project()
+    root = Path(proj["images"]).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    if src.is_file():
+        found = [src] if src.suffix.lower() in EXTS else []
+    else:
+        found = []
+        for path in src.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in EXTS:
+                continue
+            try:
+                resolved = path.resolve()
+            except Exception:
+                continue
+            if resolved.parent == root or root in resolved.parents:
+                continue
+            found.append(path)
+            if len(found) >= 5000:
+                break
+    if not found:
+        return jsonify({"error": "这个路径下没有可导入的图片"}), 400
+    added = []
+    for path in found:
+        name = copy_image(path, root)
+        if name:
+            added.append(name)
+    return jsonify({"count": len(added), "names": added[:30]})
+
+
+def warmup_sam3():
+    try:
+        with LOCK:
+            load_sam3()
+        print("SAM3 ready on", SAM_DEVICE, flush=True)
+    except Exception:
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    print("data:", DATA_ROOT, "device:", SAM_DEVICE, "sam3:", "on" if SAM3_ON else "off", flush=True)
+    if SAM3_ON:
+        threading.Thread(target=warmup_sam3, daemon=True, name="sam3-warmup").start()
+    app.run(host=config.HOST, port=config.PORT, threaded=True)

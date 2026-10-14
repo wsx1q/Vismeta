@@ -1,0 +1,7 @@
+# 两个版本都要的：网页服务、图像处理、SAM（CPU，ONNX）
+flask==3.1.3
+numpy>=1.26,<2
+# 4.11 起要求 numpy 2，SAM3 需要 numpy<2
+opencv-python-headless>=4.8,<4.11
+pillow>=10
+onnxruntime>=1.18

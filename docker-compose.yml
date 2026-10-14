@@ -1,0 +1,41 @@
+# CPU 版：只有标注服务。
+# GPU 版叠加 docker-compose.gpu.yml（SAM3 走 GPU，并可附带本地多模态大模型）：
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# 一般直接用 ./deploy.sh，它会自动判断。
+# 镜像里只有代码；模型权重、模型路径、大模型接口地址都在运行时通过 .env 和挂载目录提供。
+# CPU 版镜像不带 torch，只有网页服务和 SAM（CPU，ONNX）。
+name: label-web
+
+services:
+  web:
+    build:
+      context: .
+      target: cpu
+      # 构建时走代理：BUILD_PROXY=http://127.0.0.1:7897，代理只监听本机时再设 BUILD_NETWORK=host
+      network: ${BUILD_NETWORK:-default}
+      args:
+        http_proxy: ${BUILD_PROXY:-}
+        https_proxy: ${BUILD_PROXY:-}
+        no_proxy: ${BUILD_NO_PROXY:-}
+        PIP_INDEX: ${PIP_INDEX:-https://pypi.org/simple}
+        APT_MIRROR: ${APT_MIRROR:-}
+    image: label-web:cpu
+    user: "${LABEL_UID:-0}:${LABEL_GID:-0}"
+    ports:
+      - "${LABEL_PORT:-8088}:8088"
+    volumes:
+      - ${LABEL_DATA_DIR:-./data}:/data
+      - ${LABEL_MODELS_DIR:-./data/models}:/models
+    environment:
+      LABEL_DEVICE: cpu
+      LABEL_MODELS: /models
+      SAM3: ${SAM3:-auto}
+      SAM3_CKPT: /models/${SAM3_WEIGHTS:-sam3.pt}
+      SAM1_DIR: /models/${SAM1_WEIGHTS_DIR:-sam1}
+      # 第一次启动时生成的默认大模型接口（之后以网页「大模型设置」为准）。
+      # CPU 版不带大模型，可以填外部的 OpenAI 兼容服务。
+      VLM_URL: ${VLM_URL:-${VLM_DEFAULT_URL:-}}
+      VLM_MODEL_NAME: ${VLM_URL_MODEL:-${VLM_ALIAS:-}}
+      VLM_API_KEY: ${VLM_API_KEY:-}
+      VLM_IMAGE_SIDE: ${VLM_IMAGE_SIDE:-512}
+    restart: unless-stopped

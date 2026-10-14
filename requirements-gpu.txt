@@ -1,0 +1,11 @@
+# GPU 版额外要的：SAM3 的依赖（torch / torchvision 按 CUDA 版本单独安装，见 Dockerfile）
+timm>=1.0.17
+tqdm
+ftfy==6.1.1
+regex
+iopath>=0.1.10
+typing_extensions
+huggingface_hub
+einops
+pycocotools
+psutil

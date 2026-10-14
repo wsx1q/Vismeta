@@ -1,0 +1,6 @@
+data/
+vendor/
+.env
+.deploy-mode
+__pycache__/
+*.pyc
