@@ -191,4 +191,6 @@ sam3.patch           SAM3 推理补丁（bfloat16 修正、显存释放）
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
 - [X-AnyLabeling](https://github.com/CVHub520/X-AnyLabeling) 提供的 SAM ONNX 权重
 
-第三方代码和模型权重遵循各自的许可证。
+## 许可证
+
+本项目以 [GPL-3.0](LICENSE) 开源。第三方代码（SAM3、llama.cpp 等）和模型权重遵循各自的许可证。
