@@ -72,18 +72,26 @@ def yolo_shapes(path, width, height, names):
     return shapes
 
 
-def import_tree(source, project, cap=20000):
+def import_tree(source, project, cap=20000, progress=None):
     source = Path(source).resolve()
     boundary = source if source.is_dir() else source.parent
     images_root = Path(project['images']).resolve()
     annotations_root = Path(project['annotations'])
     images_root.mkdir(parents=True, exist_ok=True)
     annotations_root.mkdir(parents=True, exist_ok=True)
+    if progress:
+        progress(phase='scanning', processed=0, total=0, count=0, skipped=0, shapes=0)
     images = [source] if source.is_file() else sorted(source.rglob('*'))
+    images = [p for p in images if p.is_file() and p.suffix.lower() in EXTS and '__MACOSX' not in p.parts
+              and images_root != p.parent.resolve() and images_root not in p.resolve().parents]
+    total = min(len(images), cap)
+    processed = 0
+    if progress:
+        progress(phase='importing', processed=0, total=total, count=0, skipped=0, shapes=0)
     added, errors, labels = [], [], set()
     annotated = objects = empty = 0
     cache = {}
-    for image in images:
+    for image in images[:cap]:
         if not image.is_file() or image.suffix.lower() not in EXTS or '__MACOSX' in image.parts:
             continue
         if images_root == image.parent.resolve() or images_root in image.resolve().parents:
@@ -143,6 +151,12 @@ def import_tree(source, project, cap=20000):
             added.append(dest.name)
         except Exception as exc:
             errors.append(f'{image.name}: {exc}')
+        processed += 1
+        if progress:
+            progress(phase='importing', processed=processed, total=total, count=len(added),
+                     skipped=len(errors), shapes=objects, filename=image.name)
+    if len(images) > cap:
+        errors.append(f'达到单次 {cap} 张上限，余下图片未导入')
     labels_path = Path(project['labels'])
     if labels:
         old = json.loads(labels_path.read_text(encoding='utf-8')) if labels_path.exists() else {'labels': []}

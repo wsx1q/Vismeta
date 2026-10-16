@@ -5,6 +5,7 @@ import shutil
 import threading
 import time
 import traceback
+import uuid
 from pathlib import Path
 
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
@@ -1094,6 +1095,57 @@ def delete_project(pid):
 
 ARCHIVE_EXTS = {".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar"}
 IMPORT_CAP = 20000
+IMPORT_JOBS = {}
+IMPORT_JOBS_LOCK = threading.Lock()
+
+
+def import_job_snapshot(job):
+    return {k: v for k, v in job.items() if k != 'project_id'}
+
+
+@app.get("/api/import/jobs/<job_id>")
+def import_job_status(job_id):
+    project = current_project()
+    with IMPORT_JOBS_LOCK:
+        job = IMPORT_JOBS.get(job_id)
+        if not job or job['project_id'] != project['id']:
+            return jsonify({'error': '导入任务不存在'}), 404
+        return jsonify(import_job_snapshot(job))
+
+
+def start_path_import(src, project):
+    from dataset_import import import_tree
+    with IMPORT_JOBS_LOCK:
+        for key in list(IMPORT_JOBS):
+            job = IMPORT_JOBS[key]
+            if job['status'] != 'running' and time.time() - job['updated'] > 3600:
+                del IMPORT_JOBS[key]
+        for job in IMPORT_JOBS.values():
+            if job['project_id'] == project['id'] and job['status'] == 'running':
+                return jsonify(import_job_snapshot(job)), 202
+        if len(IMPORT_JOBS) >= 100:
+            finished = [key for key, job in IMPORT_JOBS.items() if job['status'] != 'running']
+            if not finished:
+                return jsonify({'error': '导入任务过多，请稍后重试'}), 429
+            del IMPORT_JOBS[finished[0]]
+        job_id = uuid.uuid4().hex
+        job = {'id': job_id, 'project_id': project['id'], 'status': 'running', 'phase': 'scanning',
+               'processed': 0, 'total': 0, 'count': 0, 'skipped': 0, 'shapes': 0, 'updated': time.time()}
+        IMPORT_JOBS[job_id] = job
+        snapshot = import_job_snapshot(job)
+
+    def update(**values):
+        with IMPORT_JOBS_LOCK:
+            job.update(values, updated=time.time())
+
+    def worker():
+        try:
+            result = import_tree(src, project, IMPORT_CAP, progress=update)
+            update(status='complete', phase='complete', result=result)
+        except Exception as exc:
+            update(status='failed', phase='failed', error=str(exc))
+    threading.Thread(target=worker, daemon=True, name='dataset-import-' + job_id[:8]).start()
+    return jsonify(snapshot), 202
 
 
 @app.post("/api/import/files")
@@ -1134,6 +1186,8 @@ def import_server_path():
         return jsonify({"error": "请填服务器绝对路径，例如 /data/dataset"}), 400
     if not src.exists():
         return jsonify({"error": "路径不存在"}), 400
+    if body.get("async"):
+        return start_path_import(src, current_project())
     try:
         return jsonify(import_tree(src, current_project(), IMPORT_CAP))
     except (ValueError, OSError) as exc:

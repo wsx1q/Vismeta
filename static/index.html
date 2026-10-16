@@ -433,7 +433,13 @@
     <header><h3>从服务器路径导入</h3></header>
     <div class="body">
       <span class="muted">导入图片及 Labelme / YOLO 标注。YOLO 请填数据集根目录，包含 images/、labels/ 和 data.yaml（或 classes.txt）。</span>
-      <input id="server-path" type="text" placeholder="/data/images"/>
+      <input id="server-path" type="text" placeholder="/data/migrate/数据集目录"/>
+      <div id="path-progress-box" hidden>
+        <p id="path-progress-text" role="status"></p>
+        <progress id="path-progress" max="100" style="width:100%"></progress>
+        <p id="path-current" class="muted" style="overflow-wrap:anywhere"></p>
+      </div>
+      <div id="path-result" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></div>
     </div>
     <footer><span class="grow"></span><button type="button" id="path-cancel">取消</button><button type="button" id="path-ok" class="primary">导入</button></footer>
   </div>
@@ -2329,6 +2335,8 @@ $("choose-archive").onclick = () => importInputs.zip.click();
 $("import-server").onclick = () => {
   if (importBusy) return;
   closeImport(); $("pathbox").classList.add("show"); $("server-path").focus();
+  const active = store("path-import:" + projectId);
+  if (active && !pathImportBusy) monitorPathImport(active, projectId);
 };
 function renderImportSelection() {
   const plan = ImportFiles.plan(importSelection);
@@ -2485,24 +2493,85 @@ async function importLocal(all) {
   }
 }
 
+let pathImportBusy = false;
+function pathImportControls(busy) {
+  pathImportBusy = busy;
+  $("path-ok").disabled = busy;
+  $("server-path").disabled = busy;
+  $("path-cancel").textContent = busy ? "关闭（后台继续）" : "关闭";
+}
+function renderPathProgress(job) {
+  $("path-progress-box").hidden = false;
+  const bar = $("path-progress");
+  if (job.phase === "scanning") {
+    bar.removeAttribute("value");
+    $("path-progress-text").textContent = "正在扫描数据集，统计图片数量…";
+  } else {
+    const percent = job.total ? Math.floor(job.processed / job.total * 100) : 0;
+    bar.value = job.status === "complete" ? 100 : percent;
+    $("path-progress-text").textContent = "已处理 " + job.processed + " / " + job.total + " 张（" + bar.value + "%） · 成功 " + job.count + " · 失败 " + job.skipped;
+  }
+  $("path-current").textContent = job.filename ? "当前文件：" + job.filename : "";
+}
+async function monitorPathImport(jobId, pid) {
+  pathImportControls(true);
+  $("path-result").textContent = "关闭窗口后任务仍会继续，再打开可查看进度。";
+  let failures = 0;
+  try {
+    for (;;) {
+      let job;
+      try {
+        const res = await fetch("/api/import/jobs/" + encodeURIComponent(jobId), {headers: {"X-Project": pid}});
+        job = await res.json();
+        if (!res.ok) throw new Error(job.error || "获取导入进度失败");
+        failures = 0;
+      } catch (err) {
+        if (++failures >= 5) throw new Error("无法获取进度：" + err.message + "。请重新打开服务器导入窗口重试。");
+        $("path-result").textContent = "连接暂时中断，正在重试获取进度…";
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        continue;
+      }
+      renderPathProgress(job);
+      if (job.status !== "running") {
+        store("path-import:" + pid, "");
+        if (job.status === "failed") throw new Error(job.error || "导入失败");
+        const data = job.result;
+        $("path-result").textContent = "导入完成：成功 " + data.count + " 张，其中 " + data.annotated + " 张有标注，共 " + data.shapes + " 个目标。" + (data.skipped ? "失败 " + data.skipped + " 项。\n" + (data.errors || []).join("\n") : "");
+        if (projectId === pid) {
+          await loadLabels();
+          await reloadList();
+          if (index < 0 && items.length) await openAt(0);
+          setStatus("服务器导入完成：" + data.count + " 张，" + data.shapes + " 个目标");
+        }
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 750));
+    }
+  } catch (err) {
+    $("path-result").textContent = err.message || "导入失败";
+  } finally {
+    pathImportControls(false);
+  }
+}
 $("path-cancel").onclick = () => $("pathbox").classList.remove("show");
 $("server-path").addEventListener("keydown", event => { if (event.key === "Enter") $("path-ok").click(); });
 $("path-ok").onclick = async () => {
   const path = $("server-path").value.trim();
-  if (!path) return;
-  $("pathbox").classList.remove("show");
-  toastCenter("正在导入图片和标注…", "busy");
+  if (!path || pathImportBusy) return;
+  const pid = projectId;
+  pathImportControls(true);
+  $("path-result").textContent = "正在创建导入任务…";
+  renderPathProgress({phase: "scanning"});
   try {
-    const res = await postJSON("/api/import/path", {path});
-    const data = await res.json();
-    if (!res.ok) { toastCenter(data.error || "导入失败", "err"); return; }
-    toastCenter("");
-    setStatus("已从服务器导入 " + data.count + " 张，含标注 " + data.annotated + " 张，" + data.shapes + " 个目标" + (data.skipped ? "，失败 " + data.skipped + " 张" : ""));
-    if (data.errors?.length) toastCenter(data.errors.join("；"), "err");
-    await loadLabels();
-    reloadList();
+    const res = await postJSON("/api/import/path", {path, async: true});
+    const job = await res.json();
+    if (!res.ok) throw new Error(job.error || "导入失败");
+    store("path-import:" + pid, job.id);
+    await monitorPathImport(job.id, pid);
   } catch (err) {
-    toastCenter(err.message || "导入失败", "err");
+    $("path-result").textContent = err.message || "导入失败";
+  } finally {
+    pathImportControls(false);
   }
 };
 
