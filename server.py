@@ -20,6 +20,7 @@ from flask import Flask, abort, jsonify, request, send_file
 from PIL import Image
 
 import config
+from memory_utils import trim_cpu_memory
 
 DATA_ROOT = config.DATA_ROOT
 PROJECTS_FILE = DATA_ROOT / "projects.json"
@@ -44,6 +45,14 @@ STATE = {
     "image_key": None,
     "sam3_error": None,
 }
+
+
+@app.after_request
+def reclaim_inference_memory(response):
+    # View frames and their large image arrays have been released at this point.
+    if request.endpoint == "segment":
+        trim_cpu_memory()
+    return response
 
 
 def load_projects():
@@ -296,23 +305,50 @@ def cache_image(kind, path, array):
     return
 
 
-def sam3_state(path, array):
-    key = ("sam3", str(path), path.stat().st_mtime)
-    if STATE["image_key"] == key and STATE.get("sam3_state") is not None:
-        return STATE["sam3_state"]
-    with torch.inference_mode():
-        state = STATE["sam3_processor"].set_image(Image.fromarray(array))
-    STATE["sam3_state"] = state
-    STATE["image_key"] = key
+def sam3_state(path, text=False):
+    key = (str(path), path.stat().st_mtime_ns, STATE.get("sam3_epoch", 0) if text else None)
+    state_key, image_key = ("sam3_text_state", "sam3_text_key") if text else ("sam3_state", "image_key")
+    STATE["image_last_used"] = time.monotonic()
+    if STATE.get(image_key) == key and STATE.get(state_key) is not None:
+        return STATE[state_key]
+    # Drop the previous feature tensors before allocating their replacement.
+    STATE[state_key] = None
+    STATE[image_key] = None
+    with Image.open(path) as image, image.convert("RGB") as rgb, torch.inference_mode():
+        state = STATE["sam3_processor"].set_image(rgb)
+    backbone = state["backbone_out"]
+    if text:
+        backbone.pop("sam2_backbone_out", None)
+    else:
+        state["backbone_out"] = {"sam2_backbone_out": backbone["sam2_backbone_out"]}
+    STATE[state_key] = state
+    STATE[image_key] = key
     return state
+
+
+def expire_image_cache(now=None):
+    timeout = config.SAM_CACHE_IDLE_SECONDS
+    if not timeout or not LOCK.acquire(blocking=False):
+        return False
+    try:
+        last = STATE.get("image_last_used")
+        if last is None or (time.monotonic() if now is None else now) - last < timeout:
+            return False
+        for key in ("sam3_state", "sam3_text_state", "image_key", "sam3_text_key", "image_last_used"):
+            STATE[key] = None
+        release_cuda()
+        trim_cpu_memory(force=True)
+        return True
+    finally:
+        LOCK.release()
 
 
 def sam3_interactive(path, points, box, output, confidence):
     ensure("sam3")
     if STATE["sam3_model"].inst_interactive_predictor is None:
         raise RuntimeError("这份 SAM3 没有点选头")
-    array, width, height = read_rgb(path)
-    state = sam3_state(path, array)
+    state = sam3_state(path)
+    width, height = state["original_width"], state["original_height"]
     point_coords = None
     point_labels = None
     if points:
@@ -345,22 +381,16 @@ def sam3_interactive(path, points, box, output, confidence):
 
 def sam3_text(path, text, box, output, confidence):
     ensure("sam3")
-    array, width, height = read_rgb(path)
     processor = STATE["sam3_processor"]
     processor.confidence_threshold = confidence
     # 点选会把部分权重转成 bfloat16，不能复用点选之前缓存的图像特征。
-    text_key = ("sam3-text", str(path), path.stat().st_mtime, STATE.get("sam3_epoch", 0))
-    cached = STATE.get("sam3_text_state") if STATE.get("sam3_text_key") == text_key else None
-    if cached is None:
-        with torch.inference_mode():
-            cached = processor.set_image(Image.fromarray(array))
-        STATE["sam3_text_state"] = cached
-        STATE["sam3_text_key"] = text_key
-    trimmed = {key: value for key, value in cached["backbone_out"].items() if key != "sam2_backbone_out"}
+    cached = sam3_state(path, text=True)
+    width, height = cached["original_width"], cached["original_height"]
     state = {
         "original_height": cached["original_height"],
         "original_width": cached["original_width"],
-        "backbone_out": clone_tensors(trimmed),
+        "backbone_out": clone_tensors(cached["backbone_out"]),
+        "boxes_only": output == "box",
     }
     with torch.inference_mode():
         if text:
@@ -376,8 +406,8 @@ def sam3_text(path, text, box, output, confidence):
     boxes = state.get("boxes")
     mask_list = []
     box_list = []
-    if masks is not None:
-        data = masks.detach().float().cpu().numpy()
+    if masks is not None and output != "box":
+        data = masks.detach().cpu().numpy()
         for mask in data:
             mask_list.append(mask)
     if boxes is not None:
@@ -419,8 +449,10 @@ def health():
     except Exception as exc:
         STATE["sam3_error"] = str(exc)
     vram = None
+    reserved = None
     if SAM_DEVICE.startswith("cuda"):
         vram = round(torch.cuda.memory_allocated(torch.device(SAM_DEVICE)) / (1024 * 1024))
+        reserved = round(torch.cuda.memory_reserved(torch.device(SAM_DEVICE)) / (1024 * 1024))
     return jsonify({
         "ok": True,
         "device": SAM_DEVICE,
@@ -430,6 +462,7 @@ def health():
         "sam3_resident": STATE.get("sam3_processor") is not None,
         "sam3_device": SAM_DEVICE,
         "sam3_vram_mb": vram,
+        "sam3_reserved_mb": reserved,
         "sam3_error": STATE["sam3_error"],
     })
 
@@ -1101,4 +1134,10 @@ if __name__ == "__main__":
     print("data:", DATA_ROOT, "device:", SAM_DEVICE, "sam3:", "on" if SAM3_ON else "off", flush=True)
     if SAM3_ON:
         threading.Thread(target=warmup_sam3, daemon=True, name="sam3-warmup").start()
+    if config.SAM_CACHE_IDLE_SECONDS:
+        def maintain_memory():
+            while True:
+                time.sleep(min(30, config.SAM_CACHE_IDLE_SECONDS))
+                expire_image_cache()
+        threading.Thread(target=maintain_memory, daemon=True, name="image-cache-cleanup").start()
     app.run(host=config.HOST, port=config.PORT, threaded=True)

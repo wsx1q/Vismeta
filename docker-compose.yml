@@ -29,6 +29,8 @@ services:
       - ${LABEL_IMPORT_DIR:-./imports}:/imports:ro
     environment:
       LABEL_DEVICE: cpu
+      MALLOC_ARENA_MAX: ${LABEL_MALLOC_ARENA_MAX:-2}
+      SAM_CACHE_IDLE_SECONDS: ${SAM_CACHE_IDLE_SECONDS:-120}
       LABEL_MODELS: /models
       SAM3: ${SAM3:-auto}
       SAM3_CKPT: /models/${SAM3_WEIGHTS:-sam3.pt}

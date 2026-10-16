@@ -12,7 +12,7 @@ GITHUB_PREFIX="${GITHUB_PREFIX:-}"
 
 fetch() {  # fetch 目录名 GitHub仓库 提交号
   local name="$1" repo="$2" ref="$3" dest="vendor/$1"
-  if [ -f "$dest/.ref" ] && [ "$(cat "$dest/.ref")" = "$ref" ]; then
+  if [ -f "$dest/.ref" ] && [ "$(cat "$dest/.ref")" = "$ref" ] && { [ "$name" != sam3 ] || { [ -f "$dest/.patch.sha256" ] && [ "$(cat "$dest/.patch.sha256")" = "$(sha256sum sam3.patch | cut -d ' ' -f1)" ]; }; }; then
     echo "vendor/$name 已是 ${ref:0:8}，跳过"
     return 1
   fi
@@ -30,6 +30,7 @@ fetch() {  # fetch 目录名 GitHub仓库 提交号
 if fetch sam3 facebookresearch/sam3 "$SAM3_REF"; then
   # 只留安装要用的；打上本项目的补丁
   (cd vendor/sam3 && rm -rf assets examples scripts test .github && patch -p1 --forward < ../../sam3.patch)
+  sha256sum sam3.patch | cut -d ' ' -f1 > vendor/sam3/.patch.sha256
 fi
 
 if fetch llama.cpp ggml-org/llama.cpp "$LLAMA_CPP_REF"; then

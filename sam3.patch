@@ -1,41 +1,48 @@
 diff --git a/sam3/model/sam3_image_processor.py b/sam3/model/sam3_image_processor.py
-index f8439f5..bb481f1 100644
 --- a/sam3/model/sam3_image_processor.py
 +++ b/sam3/model/sam3_image_processor.py
-@@ -202,19 +202,25 @@ class Sam3Processor:
+@@ -201,23 +201,27 @@
+         out_masks = out_masks[keep]
          out_bbox = out_bbox[keep]
  
-         # convert to [x0, y0, x1, y1] format
+-        # convert to [x0, y0, x1, y1] format
 -        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
+-
++        # Keep compact boxes on CPU; box-only requests need no full-size masks.
 +        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox).detach().float().cpu()
 +        out_probs = out_probs.detach().float().cpu()
-+        out_masks = out_masks.detach().float().cpu()
-+        del outputs
- 
          img_h = state["original_height"]
          img_w = state["original_width"]
 -        scale_fct = torch.tensor([img_w, img_h, img_w, img_h]).to(self.device)
 +        scale_fct = torch.tensor([img_w, img_h, img_w, img_h])
          boxes = boxes * scale_fct[None, :]
- 
+-
 -        out_masks = interpolate(
 -            out_masks.unsqueeze(1),
 -            (img_h, img_w),
 -            mode="bilinear",
 -            align_corners=False,
 -        ).sigmoid()
-+        if out_masks.numel():
-+            out_masks = interpolate(
-+                out_masks.unsqueeze(1),
-+                (img_h, img_w),
-+                mode="bilinear",
-+                align_corners=False,
-+            ).sigmoid()
+-
+-        state["masks_logits"] = out_masks
+-        state["masks"] = out_masks > 0.5
++        state["masks_logits"] = None
++        if state.get("boxes_only", False):
++            state["masks"] = None
 +        else:
-+            out_masks = out_masks.new_zeros((0, 1, img_h, img_w))
- 
-         state["masks_logits"] = out_masks
-         state["masks"] = out_masks > 0.5
++            out_masks = out_masks.detach().float().cpu()
++            del outputs
++            # One temporary float mask instead of N original-size float masks.
++            masks = torch.empty((len(out_masks), 1, img_h, img_w), dtype=torch.bool)
++            for i in range(len(out_masks)):
++                masks[i:i + 1] = interpolate(
++                    out_masks[i:i + 1].unsqueeze(1),
++                    (img_h, img_w), mode="bilinear", align_corners=False,
++                ).sigmoid() > 0.5
++            state["masks"] = masks
+         state["boxes"] = boxes
+         state["scores"] = out_probs
+         return state
 diff --git a/sam3/perflib/fused.py b/sam3/perflib/fused.py
 index 6800cca..6c9316e 100644
 --- a/sam3/perflib/fused.py

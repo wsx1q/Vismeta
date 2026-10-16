@@ -18,6 +18,8 @@ PORT = int(os.environ.get("LABEL_PORT", "8088"))
 DEVICE = os.environ.get("LABEL_DEVICE", "auto").strip().lower()
 # SAM3：auto 只在 GPU 上启用（CPU 上太慢）；on / off 强制。
 SAM3 = os.environ.get("SAM3", "auto").strip().lower()
+# Release image features after inactivity; keep model weights resident. Zero disables it.
+SAM_CACHE_IDLE_SECONDS = max(0, float(os.environ.get("SAM_CACHE_IDLE_SECONDS", "120")))
 
 # 第一次启动、还没有 vlm.json 时，用这里的地址生成默认大模型接口。
 VLM_URL = os.environ.get("VLM_URL", "").strip()
