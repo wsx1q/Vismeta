@@ -31,6 +31,7 @@ services:
       - ${LABEL_IMPORT_DIR:-./imports}:/imports:ro
     environment:
       LABEL_DEVICE: cpu
+      IMPORT_WORKERS: ${IMPORT_WORKERS:-4}
       MALLOC_ARENA_MAX: ${LABEL_MALLOC_ARENA_MAX:-2}
       SAM_CACHE_IDLE_SECONDS: ${SAM_CACHE_IDLE_SECONDS:-120}
       LABEL_MODELS: /models

@@ -1,6 +1,9 @@
 """Import image trees with Labelme or YOLO detection/segmentation sidecars."""
 import json
 import math
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import shutil
 from pathlib import Path
 
@@ -91,70 +94,96 @@ def import_tree(source, project, cap=20000, progress=None):
     added, errors, labels = [], [], set()
     annotated = objects = empty = 0
     cache = {}
+    cache_lock = threading.Lock()
+    # Allocate names before dispatch so equal stems across splits cannot race.
+    used = {p.stem for root in (images_root, annotations_root) for p in root.iterdir() if p.is_file()}
+    work = []
     for image in images[:cap]:
-        if not image.is_file() or image.suffix.lower() not in EXTS or '__MACOSX' in image.parts:
-            continue
-        if images_root == image.parent.resolve() or images_root in image.resolve().parents:
-            continue
-        if len(added) >= cap:
-            errors.append(f'达到单次 {cap} 张上限，余下图片未导入')
-            break
-        try:
-            ann = sidecar(image, '.json', boundary)
-            txt = sidecar(image, '.txt', boundary) if ann is None else None
-            doc = None
-            if ann or txt:
-                with Image.open(image) as im:
-                    width, height = im.size
-                if ann:
-                    doc = json.loads(ann.read_text(encoding='utf-8-sig'))
-                    if not isinstance(doc, dict) or not isinstance(doc.get('shapes'), list):
-                        raise ValueError('JSON 不是 Labelme 标注')
-                    for shape in doc['shapes']:
-                        kind = shape.get('shape_type', 'polygon')
-                        points = shape.get('points', [])
-                        if kind not in {'rectangle', 'polygon'} or len(points) < (2 if kind == 'rectangle' else 3):
-                            raise ValueError(f'不支持的标注形状：{kind}')
-                        if not str(shape.get('label', '')).strip() or not all(len(p) == 2 and all(math.isfinite(float(v)) for v in p) for p in points):
-                            raise ValueError('标签或坐标无效')
-                    doc.pop('imageData', None)
-                else:
-                    names = None
-                    for parent in image.parents:
+        stem, n = image.stem, 1
+        while stem in used:
+            n += 1
+            stem = f'{image.stem}_{n}'
+        used.add(stem)
+        work.append((image, images_root / (stem + image.suffix.lower())))
+
+    def import_one(image, dest):
+        ann = sidecar(image, '.json', boundary)
+        txt = sidecar(image, '.txt', boundary) if ann is None else None
+        doc = None
+        if ann or txt:
+            with Image.open(image) as im:
+                width, height = im.size
+            if ann:
+                doc = json.loads(ann.read_text(encoding='utf-8-sig'))
+                if not isinstance(doc, dict) or not isinstance(doc.get('shapes'), list):
+                    raise ValueError('JSON 不是 Labelme 标注')
+                for shape in doc['shapes']:
+                    kind = shape.get('shape_type', 'polygon')
+                    points = shape.get('points', [])
+                    if kind not in {'rectangle', 'polygon'} or len(points) < (2 if kind == 'rectangle' else 3):
+                        raise ValueError(f'不支持的标注形状：{kind}')
+                    if not str(shape.get('label', '')).strip() or not all(len(p) == 2 and all(math.isfinite(float(v)) for v in p) for p in points):
+                        raise ValueError('标签或坐标无效')
+                doc.pop('imageData', None)
+            else:
+                names = None
+                for parent in image.parents:
+                    with cache_lock:
                         if parent not in cache:
                             cache[parent] = class_names(parent)
-                        if cache[parent] is not None:
-                            names = cache[parent]
-                            break
-                        if parent == boundary:
-                            break
-                    doc = {'shapes': yolo_shapes(txt, width, height, names), 'flags': {}}
-                doc.update(version='2.4.0', imageData=None, imageWidth=width, imageHeight=height)
-            # Both image names and annotation stems must be unique, even across extensions.
-            stem, n = image.stem, 1
-            while any((images_root / (stem + ext)).exists() for ext in EXTS | {image.suffix}) or (annotations_root / (stem + '.json')).exists():
-                n += 1
-                stem = f'{image.stem}_{n}'
-            dest = images_root / (stem + image.suffix.lower())
+                        parent_names = cache[parent]
+                    if parent_names is not None:
+                        names = parent_names
+                        break
+                    if parent == boundary:
+                        break
+                doc = {'shapes': yolo_shapes(txt, width, height, names), 'flags': {}}
+            doc.update(version='2.4.0', imageData=None, imageWidth=width, imageHeight=height)
+        # Exclusive creation also protects against another uploader writing this name.
+        with dest.open('xb'):
+            pass
+        annotation = annotations_root / (dest.stem + '.json')
+        try:
             shutil.copy2(image, dest)
-            try:
-                if doc is not None:
-                    doc['imagePath'] = dest.name
-                    (annotations_root / (stem + '.json')).write_text(json.dumps(doc, ensure_ascii=False), encoding='utf-8')
-                    annotated += bool(doc['shapes'])
-                    empty += not bool(doc['shapes'])
-                    objects += len(doc['shapes'])
-                    labels.update(s['label'] for s in doc['shapes'])
-            except Exception:
-                dest.unlink(missing_ok=True)
-                raise
-            added.append(dest.name)
-        except Exception as exc:
-            errors.append(f'{image.name}: {exc}')
-        processed += 1
-        if progress:
-            progress(phase='importing', processed=processed, total=total, count=len(added),
-                     skipped=len(errors), shapes=objects, filename=image.name)
+            if doc is not None:
+                doc['imagePath'] = dest.name
+                annotation.write_text(json.dumps(doc, ensure_ascii=False), encoding='utf-8')
+        except Exception:
+            dest.unlink(missing_ok=True)
+            annotation.unlink(missing_ok=True)
+            raise
+        return dest.name, doc
+
+    workers = max(1, min(8, int(os.environ.get('IMPORT_WORKERS', '4'))))
+    work_iter = iter(work)
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='import-copy') as pool:
+        pending = {}
+        def submit_next():
+            task = next(work_iter, None)
+            if task is not None:
+                image, dest = task
+                pending[pool.submit(import_one, image, dest)] = image
+        for _ in range(workers):
+            submit_next()
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                image = pending.pop(future)
+                try:
+                    name, doc = future.result()
+                    added.append(name)
+                    if doc is not None:
+                        annotated += bool(doc['shapes'])
+                        empty += not bool(doc['shapes'])
+                        objects += len(doc['shapes'])
+                        labels.update(s['label'] for s in doc['shapes'])
+                except Exception as exc:
+                    errors.append(f'{image.name}: {exc}')
+                processed += 1
+                if progress:
+                    progress(phase='importing', processed=processed, total=total, count=len(added),
+                             skipped=len(errors), shapes=objects, filename=image.name)
+                submit_next()
     if len(images) > cap:
         errors.append(f'达到单次 {cap} 张上限，余下图片未导入')
     labels_path = Path(project['labels'])

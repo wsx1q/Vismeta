@@ -4,6 +4,10 @@ import json
 import tempfile
 import unittest
 import zipfile
+import shutil
+import threading
+import time
+from unittest.mock import patch
 from pathlib import Path
 
 from PIL import Image
@@ -84,6 +88,47 @@ class DatasetImportTest(unittest.TestCase):
         extract_archive(archive, self.src)
         self.assertFalse((self.root / 'escape.txt').exists())
         self.assertEqual(import_tree(self.src, self.project)['annotated'], 1)
+
+    def test_parallel_copy_is_bounded_and_same_stems_remain_unique(self):
+        for i in range(24):
+            self.image(f'{i}/same.jpg')
+            self.text(f'{i}/same.json', json.dumps({'shapes': [{'label': str(i), 'shape_type': 'rectangle', 'points': [[1, 1], [10, 9]]}]}))
+        original = shutil.copy2
+        active = peak = 0
+        lock = threading.Lock()
+        def copy(src, dst):
+            nonlocal active, peak
+            with lock:
+                active += 1; peak = max(peak, active)
+            try:
+                time.sleep(.01)
+                return original(src, dst)
+            finally:
+                with lock: active -= 1
+        reports = []
+        with patch.dict('os.environ', {'IMPORT_WORKERS': '4'}), patch('dataset_import.shutil.copy2', side_effect=copy):
+            result = import_tree(self.src, self.project, progress=lambda **kw: reports.append(kw))
+        self.assertGreater(peak, 1)
+        self.assertLessEqual(peak, 4)
+        self.assertEqual((result['count'], result['shapes'], result['skipped']), (24, 24, 0))
+        docs = self.docs()
+        self.assertEqual(len({d['imagePath'] for d in docs}), 24)
+        self.assertEqual({d['shapes'][0]['label'] for d in docs}, {str(i) for i in range(24)})
+        self.assertEqual([r['processed'] for r in reports[2:]], list(range(1, 25)))
+
+    def test_copy_failure_removes_partial_destination_and_keeps_other_images(self):
+        self.image('bad.jpg'); self.image('good.jpg')
+        original = shutil.copy2
+        def copy(src, dst):
+            if src.name == 'bad.jpg':
+                dst.write_bytes(b'partial')
+                raise OSError('simulated disk failure')
+            return original(src, dst)
+        with patch('dataset_import.shutil.copy2', side_effect=copy):
+            result = import_tree(self.src, self.project)
+        self.assertEqual((result['count'], result['skipped']), (1, 1))
+        self.assertFalse((Path(self.project['images'])/'bad.jpg').exists())
+        self.assertTrue((Path(self.project['images'])/'good.jpg').exists())
 
 
 if __name__ == '__main__':

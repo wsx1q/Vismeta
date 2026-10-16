@@ -31,6 +31,10 @@
 
   /* 顶栏 */
   #top { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0; }
+  #import-task[hidden] { display: none; }
+  #import-task { color: var(--link); border-color: var(--blue); max-width: 260px; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; min-width: 100px; }
+  #import-task[data-status="complete"] { color: var(--green2); border-color: var(--green); }
+  #import-task[data-status="failed"], #import-task[data-status="disconnected"] { color: var(--red); border-color: var(--red); }
   #top .brand { font-weight: 700; }
   #proj-name { font-weight: 600; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #top label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 13px; cursor: pointer; }
@@ -236,6 +240,7 @@
   <button type="button" id="proj-name" title="修改项目名称"></button>
   <span class="sep"></span>
   <button type="button" id="import-local">导入图片 / 数据集</button>
+  <button type="button" id="import-task" hidden title="查看后台导入进度" aria-live="polite"></button>
   <span class="pick" id="export-pick">
     <button type="button" class="caret" id="export-btn">导出</button>
     <ul class="pick-menu" hidden>
@@ -430,7 +435,7 @@
 
 <div class="modal" id="pathbox">
   <div class="dialog">
-    <header><h3>从服务器路径导入</h3></header>
+    <header><h3 id="path-title">从服务器路径导入</h3></header>
     <div class="body">
       <span class="muted">导入图片及 Labelme / YOLO 标注。YOLO 请填数据集根目录，包含 images/、labels/ 和 data.yaml（或 classes.txt）。</span>
       <input id="server-path" type="text" placeholder="/data/migrate/数据集目录"/>
@@ -2209,6 +2214,7 @@ async function showProjects() {
 }
 async function loadProjects() {
   const data = await (await fetch("/api/projects")).json();
+  restorePathImport(data.projects || []);
   const box = $("project-list");
   box.innerHTML = "";
   if (!(data.projects || []).length) {
@@ -2334,9 +2340,11 @@ $("choose-folder").onclick = () => importInputs.dir.click();
 $("choose-archive").onclick = () => importInputs.zip.click();
 $("import-server").onclick = () => {
   if (importBusy) return;
+  if (pathImportBusy && pathImportTask) { openTrackedPathImport(); return; }
   closeImport(); $("pathbox").classList.add("show"); $("server-path").focus();
+  $("path-title").textContent = "从服务器路径导入 · " + projectName;
   const active = store("path-import:" + projectId);
-  if (active && !pathImportBusy) monitorPathImport(active, projectId);
+  if (active && !pathImportBusy) monitorPathImport(active, projectId, projectName);
 };
 function renderImportSelection() {
   const plan = ImportFiles.plan(importSelection);
@@ -2494,6 +2502,51 @@ async function importLocal(all) {
 }
 
 let pathImportBusy = false;
+let pathImportTask = null;
+let monitoredImportJob = null;
+function updateImportTask(job, pid, name) {
+  pathImportTask = {...pathImportTask, id: job.id || pathImportTask?.id, pid, name,
+                    job: {...job}};
+  const button = $("import-task");
+  button.hidden = false;
+  button.dataset.status = job.status || "running";
+  let state;
+  if (job.status === "complete") state = "导入完成 · " + (job.result?.count ?? job.count ?? 0) + " 张";
+  else if (job.status === "failed") state = "导入失败";
+  else if (job.status === "disconnected") state = "导入进度连接中断";
+  else if (job.phase === "scanning") state = "导入中 · 扫描文件…";
+  else {
+    const percent = job.total ? Math.floor(job.processed / job.total * 100) : 0;
+    state = "导入 " + percent + "% · " + (job.processed || 0) + "/" + (job.total || 0);
+  }
+  button.textContent = state;
+  button.title = name + " · " + state + "；点击返回导入窗口";
+  button.setAttribute("aria-label", name + " · " + state + "，点击查看导入详情");
+}
+function restorePathImport(projects) {
+  if (pathImportBusy || pathImportTask) return;
+  const project = projects.find(item => store("path-import:" + item.id));
+  if (!project) return;
+  const id = store("path-import:" + project.id);
+  updateImportTask({id, status: "running", phase: "scanning"}, project.id, project.name);
+  monitorPathImport(id, project.id, project.name);
+}
+async function openTrackedPathImport() {
+  const task = pathImportTask;
+  if (!task) return;
+  if (projectId !== task.pid) {
+    if (!(await leaveCurrent())) return;
+    await enterProject(task.pid, task.name);
+  }
+  $("projects").classList.remove("show");
+  closeImport();
+  $("path-title").textContent = "从服务器路径导入 · " + task.name;
+  $("server-path").value = store("path-import-source:" + task.pid) || "";
+  $("pathbox").classList.add("show");
+  renderPathProgress(task.job);
+  if (!pathImportBusy && task.job.status === "disconnected") monitorPathImport(task.id, task.pid, task.name);
+}
+$("import-task").onclick = openTrackedPathImport;
 function pathImportControls(busy) {
   pathImportBusy = busy;
   $("path-ok").disabled = busy;
@@ -2513,7 +2566,10 @@ function renderPathProgress(job) {
   }
   $("path-current").textContent = job.filename ? "当前文件：" + job.filename : "";
 }
-async function monitorPathImport(jobId, pid) {
+async function monitorPathImport(jobId, pid, name = projectName) {
+  if (monitoredImportJob === jobId) return;
+  monitoredImportJob = jobId;
+  updateImportTask({id: jobId, status: "running", phase: "scanning"}, pid, name);
   pathImportControls(true);
   $("path-result").textContent = "关闭窗口后任务仍会继续，再打开可查看进度。";
   let failures = 0;
@@ -2523,7 +2579,10 @@ async function monitorPathImport(jobId, pid) {
       try {
         const res = await fetch("/api/import/jobs/" + encodeURIComponent(jobId), {headers: {"X-Project": pid}});
         job = await res.json();
-        if (!res.ok) throw new Error(job.error || "获取导入进度失败");
+        if (res.status === 404) {
+          job = {id: jobId, status: "failed", phase: "failed", processed: 0, total: 0, count: 0, skipped: 0,
+                 error: "导入任务已失效，可能是服务已重启。请确认项目现有图片后重新导入。"};
+        } else if (!res.ok) throw new Error(job.error || "获取导入进度失败");
         failures = 0;
       } catch (err) {
         if (++failures >= 5) throw new Error("无法获取进度：" + err.message + "。请重新打开服务器导入窗口重试。");
@@ -2531,6 +2590,7 @@ async function monitorPathImport(jobId, pid) {
         await new Promise(resolve => setTimeout(resolve, 1500));
         continue;
       }
+      updateImportTask(job, pid, name);
       renderPathProgress(job);
       if (job.status !== "running") {
         store("path-import:" + pid, "");
@@ -2549,7 +2609,11 @@ async function monitorPathImport(jobId, pid) {
     }
   } catch (err) {
     $("path-result").textContent = err.message || "导入失败";
+    if (pathImportTask?.job.status === "running") {
+      updateImportTask({...pathImportTask.job, status: "disconnected"}, pid, name);
+    }
   } finally {
+    monitoredImportJob = null;
     pathImportControls(false);
   }
 }
@@ -2559,6 +2623,7 @@ $("path-ok").onclick = async () => {
   const path = $("server-path").value.trim();
   if (!path || pathImportBusy) return;
   const pid = projectId;
+  const taskName = projectName;
   pathImportControls(true);
   $("path-result").textContent = "正在创建导入任务…";
   renderPathProgress({phase: "scanning"});
@@ -2567,7 +2632,8 @@ $("path-ok").onclick = async () => {
     const job = await res.json();
     if (!res.ok) throw new Error(job.error || "导入失败");
     store("path-import:" + pid, job.id);
-    await monitorPathImport(job.id, pid);
+    store("path-import-source:" + pid, path);
+    await monitorPathImport(job.id, pid, taskName);
   } catch (err) {
     $("path-result").textContent = err.message || "导入失败";
   } finally {
