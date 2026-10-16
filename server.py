@@ -86,7 +86,11 @@ def current_project():
 
 def read_doc(path):
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(doc, dict) and ("shapes" in doc or "imageData" in doc):
+            # Images are separate files. Never send, re-save, or export embedded pixels.
+            doc["imageData"] = None
+        return doc
     except Exception:
         return None
 
@@ -567,8 +571,7 @@ def get_annotation(name):
     target = ann_path(path)
     if not target.is_file():
         return jsonify({"shapes": []})
-    import json
-    return jsonify(json.loads(target.read_text(encoding="utf-8")))
+    return jsonify(read_doc(target) or {"shapes": []})
 
 
 @app.post("/api/segment")
@@ -1043,138 +1046,46 @@ ARCHIVE_EXTS = {".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z", ".rar"}
 IMPORT_CAP = 20000
 
 
-def _extract_archive(tmp_path, filename, root, added, skipped):
-    """把压缩包里的图片解到项目目录。只认 zip / tar 系列。"""
-    import tarfile
-    import zipfile
-
-    def keep(entry_name):
-        inner = Path(entry_name.replace("\\", "/")).name
-        if not inner or inner.startswith(".") or "__MACOSX" in entry_name:
-            return None
-        return inner if Path(inner).suffix.lower() in EXTS else None
-
-    if zipfile.is_zipfile(tmp_path):
-        with zipfile.ZipFile(tmp_path) as archive:
-            for info in archive.infolist():
-                if info.is_dir():
-                    continue
-                inner = keep(info.filename)
-                if not inner:
-                    skipped[0] += 1
-                    continue
-                if len(added) >= IMPORT_CAP:
-                    break
-                dest = unique_dest(root, inner)
-                with archive.open(info) as src, open(dest, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                added.append(dest.name)
-        return True
-    if tarfile.is_tarfile(tmp_path):
-        with tarfile.open(tmp_path) as archive:
-            for member in archive:
-                if not member.isfile():
-                    continue
-                inner = keep(member.name)
-                if not inner:
-                    skipped[0] += 1
-                    continue
-                if len(added) >= IMPORT_CAP:
-                    break
-                src = archive.extractfile(member)
-                if src is None:
-                    skipped[0] += 1
-                    continue
-                dest = unique_dest(root, inner)
-                with src, open(dest, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                added.append(dest.name)
-        return True
-    return False
-
-
 @app.post("/api/import/files")
 def import_files():
-    """multipart 上传。files 可以是图片，也可以是 zip / tar 压缩包，包里的图片会被解出来。"""
+    """Import images with Labelme / YOLO sidecars, preserving uploaded paths."""
     import tempfile
-    proj = current_project()
-    root = Path(proj["images"])
-    root.mkdir(parents=True, exist_ok=True)
-    added = []
-    skipped = [0]
-    bad_archives = []
-    for handle in request.files.getlist("files"):
-        name = Path((handle.filename or "").replace("\\", "/")).name
-        suffix = Path(name).suffix.lower()
-        if not name:
-            skipped[0] += 1
-            continue
-        if suffix in EXTS:
-            dest = unique_dest(root, name)
-            handle.save(dest)
-            added.append(dest.name)
-            continue
-        if suffix in ARCHIVE_EXTS or name.lower().endswith((".tar.gz", ".tar.bz2", ".tar.xz")):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".bin") as tmp:
-                handle.save(tmp)
-                tmp_path = Path(tmp.name)
-            try:
-                if not _extract_archive(tmp_path, name, root, added, skipped):
-                    bad_archives.append(name)
-            except Exception as exc:  # noqa: BLE001
-                bad_archives.append(name + "（" + str(exc) + "）")
-            finally:
-                tmp_path.unlink(missing_ok=True)
-            continue
-        skipped[0] += 1
-    payload = {"count": len(added), "skipped": skipped[0], "names": added[:30]}
-    if bad_archives:
-        payload["error_archives"] = bad_archives
-    return jsonify(payload)
+    from dataset_import import import_tree, extract_archive
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "dataset"
+        root.mkdir()
+        try:
+            for index, handle in enumerate(request.files.getlist("files")):
+                raw = (handle.filename or "").replace("\\", "/")
+                dest = (root / raw).resolve()
+                if not raw or ":" in raw or root.resolve() not in dest.parents:
+                    return jsonify({"error": "上传文件路径无效"}), 400
+                if Path(raw).suffix.lower() in ARCHIVE_EXTS:
+                    archive = Path(tmp) / ("archive_" + str(index))
+                    handle.save(archive)
+                    extract_archive(archive, root / ("archive_" + str(index)))
+                else:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    handle.save(dest)
+            return jsonify(import_tree(root, current_project(), IMPORT_CAP))
+        except (ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
 
 
 @app.post("/api/import/path")
 def import_server_path():
+    from dataset_import import import_tree
     body = request.get_json(force=True) or {}
     raw = str(body.get("path") or "").strip()
-    if not raw:
-        return jsonify({"error": "请填写服务器上的路径"}), 400
     src = Path(raw).expanduser()
-    if not src.is_absolute():
-        return jsonify({"error": "请填绝对路径，例如 /data/images"}), 400
-    try:
-        src = src.resolve()
-    except Exception:
-        return jsonify({"error": "路径打不开"}), 400
+    if not raw or not src.is_absolute():
+        return jsonify({"error": "请填服务器绝对路径，例如 /data/dataset"}), 400
     if not src.exists():
         return jsonify({"error": "路径不存在"}), 400
-    proj = current_project()
-    root = Path(proj["images"]).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    if src.is_file():
-        found = [src] if src.suffix.lower() in EXTS else []
-    else:
-        found = []
-        for path in src.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in EXTS:
-                continue
-            try:
-                resolved = path.resolve()
-            except Exception:
-                continue
-            if resolved.parent == root or root in resolved.parents:
-                continue
-            found.append(path)
-            if len(found) >= 5000:
-                break
-    if not found:
-        return jsonify({"error": "这个路径下没有可导入的图片"}), 400
-    added = []
-    for path in found:
-        name = copy_image(path, root)
-        if name:
-            added.append(name)
-    return jsonify({"count": len(added), "names": added[:30]})
+    try:
+        return jsonify(import_tree(src, current_project(), IMPORT_CAP))
+    except (ValueError, OSError) as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 def warmup_sam3():

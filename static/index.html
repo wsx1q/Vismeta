@@ -94,8 +94,8 @@
   .recent .word { flex: 1; min-width: 0; background: transparent; border: 0; text-align: left; }
   .recent .x { background: transparent; border: 0; padding: 2px 8px; color: var(--muted); }
   .recent .x:hover { color: var(--red); }
-  #stage-wrap { min-width: 0; min-height: 0; overflow: auto; position: relative; }
-  #stage { position: relative; margin: auto; width: fit-content; }
+  #stage-wrap { min-width: 0; min-height: 0; overflow: auto; position: relative; display: flex; }
+  #stage { position: relative; margin: auto; width: fit-content; flex: none; }
   #photo { display: block; max-width: none; max-height: none; }
   #overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
   #statusbar { display: flex; align-items: center; gap: 12px; padding: 4px 10px; background: var(--bg2); border-top: 1px solid var(--line); font-size: 12px; min-width: 0; }
@@ -234,7 +234,7 @@
       <li><button type="button" data-kind="labelme.zip">labelme JSON（zip）</button></li>
     </ul>
   </span>
-  <input id="import-files" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,image/*" multiple hidden/>
+  <input id="import-files" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,.txt,.json,.yaml,.yml,.names,image/*" multiple hidden/>
   <input id="import-dir" type="file" webkitdirectory directory multiple hidden/>
   <input id="import-zip" type="file" accept=".zip,.tar,.tgz,.tar.gz,.tar.bz2,.tar.xz,application/zip,application/x-tar,application/gzip" multiple hidden/>
   <span class="grow"></span>
@@ -313,7 +313,7 @@
       </div>
     </div>
     <div id="statusbar">
-      <span id="zoom">100%</span>
+      <button id="zoom" type="button" title="完整显示图片，重置为适应窗口">适应窗口</button>
       <span id="op">选择左侧一张图片</span>
       <span id="hint"></span>
     </div>
@@ -370,7 +370,7 @@
   <div class="dialog">
     <header><h3>从服务器路径导入</h3></header>
     <div class="body">
-      <span class="muted">把服务器上的图片复制进当前项目。可以填一个图片文件，或一个文件夹（会递归查找）。</span>
+      <span class="muted">导入图片及 Labelme / YOLO 标注。YOLO 请填数据集根目录，包含 images/、labels/ 和 data.yaml（或 classes.txt）。</span>
       <input id="server-path" type="text" placeholder="/data/images"/>
     </div>
     <footer><span class="grow"></span><button type="button" id="path-cancel">取消</button><button type="button" id="path-ok" class="primary">导入</button></footer>
@@ -1395,8 +1395,16 @@ function layout() {
   photo.style.height = Math.max(1, Math.round(photo.naturalHeight * fit * viewScale)) + "px";
   resize();
   draw();
-  $("zoom").textContent = Math.round(viewScale * 100) + "%";
+  const actualScale = Math.round(fit * viewScale * 100) + "%";
+  $("zoom").textContent = Math.abs(viewScale - 1) < 0.001 ? "适应窗口 · " + actualScale : actualScale;
+  $("zoom").title = "原图 " + photo.naturalWidth + "×" + photo.naturalHeight + "；点击完整显示图片";
 }
+$("zoom").onclick = () => {
+  viewScale = 1;
+  layout();
+  stageWrap.scrollLeft = 0;
+  stageWrap.scrollTop = 0;
+};
 function resize() {
   const rect = photo.getBoundingClientRect();
   overlay.width = Math.max(1, Math.round(rect.width));
@@ -2211,8 +2219,9 @@ const IMAGE_EXT = /\.(jpe?g|png|bmp|webp)$/i;
 const ARCHIVE_EXT = /\.(zip|tar|tgz|tar\.gz|tar\.bz2|tar\.xz)$/i;
 async function importLocal(all) {
   if (!projectId) return;
+  const sidecars = all.filter(f => /\.(txt|json|yaml|yml|names)$/i.test(f.name));
   const files = all.filter(f => IMAGE_EXT.test(f.name) || ARCHIVE_EXT.test(f.name));
-  const ignored = all.length - files.length;
+  const ignored = all.length - files.length - sidecars.length;
   if (!files.length) { toastCenter("没有可导入的图片或压缩包" + (ignored ? "（忽略了 " + ignored + " 个其他文件）" : ""), "err"); return; }
   // 压缩包单独发；图片按 200 张一批，避免一次请求太大。
   const batches = [];
@@ -2225,23 +2234,29 @@ async function importLocal(all) {
     curBytes += f.size;
   }
   if (cur.length) batches.push(cur);
-  let count = 0, skipped = ignored, sent = 0;
+  let count = 0, annotated = 0, skipped = ignored, sent = 0;
   const bad = [];
   try {
     for (const batch of batches) {
       const body = new FormData();
-      batch.forEach(file => body.append("files", file));
+      batch.forEach(file => body.append("files", file, file.webkitRelativePath || file.name));
+      // Repeat metadata and only the sidecars paired with this batch of images.
+      const stems = new Set(batch.map(f => f.name.replace(/\.[^.]+$/, "")));
+      sidecars.filter(f => /\.(yaml|yml|names)$/i.test(f.name) || /^(classes|obj)\.txt$/i.test(f.name) || stems.has(f.name.replace(/\.[^.]+$/, ""))).forEach(file => body.append("files", file, file.webkitRelativePath || file.name));
       sent += batch.length;
       toastCenter("正在导入 " + sent + " / " + files.length + (ARCHIVE_EXT.test(batch[0].name) ? "（解压 " + batch[0].name + "）" : "") + "…", "busy");
       const res = await fetch("/api/import/files", {method: "POST", body});
       const data = await res.json();
       if (!res.ok) { toastCenter(data.error || "导入失败", "err"); return; }
       count += data.count || 0;
+      annotated += data.annotated || 0;
+      if (data.errors) bad.push(...data.errors);
       skipped += data.skipped || 0;
       if (data.error_archives) bad.push(...data.error_archives);
     }
-    toastCenter(bad.length ? "这些压缩包打不开：" + bad.join("，") : "", bad.length ? "err" : "");
-    setStatus("已导入 " + count + " 张" + (skipped ? "，跳过 " + skipped + " 个" : ""));
+    toastCenter(bad.length ? "部分文件未导入：" + bad.join("，") : "", bad.length ? "err" : "");
+    setStatus("已导入 " + count + " 张，含标注 " + annotated + " 张" + (skipped ? "，跳过 " + skipped + " 个" : ""));
+    await loadLabels();
     reloadList();
   } catch (err) {
     toastCenter(err.message || "导入失败", "err");
@@ -2253,13 +2268,15 @@ $("path-ok").onclick = async () => {
   const path = $("server-path").value.trim();
   if (!path) return;
   $("pathbox").classList.remove("show");
-  toastCenter("正在从服务器复制图片…", "busy");
+  toastCenter("正在导入图片和标注…", "busy");
   try {
     const res = await postJSON("/api/import/path", {path});
     const data = await res.json();
     if (!res.ok) { toastCenter(data.error || "导入失败", "err"); return; }
     toastCenter("");
-    setStatus("已从服务器导入 " + data.count + " 张");
+    setStatus("已从服务器导入 " + data.count + " 张，含标注 " + data.annotated + " 张，" + data.shapes + " 个目标" + (data.skipped ? "，失败 " + data.skipped + " 张" : ""));
+    if (data.errors?.length) toastCenter(data.errors.join("；"), "err");
+    await loadLabels();
     reloadList();
   } catch (err) {
     toastCenter(err.message || "导入失败", "err");

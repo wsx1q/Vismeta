@@ -5,3 +5,5 @@ numpy>=1.26,<2
 opencv-python-headless>=4.8,<4.11
 pillow>=10
 onnxruntime>=1.18
+
+PyYAML>=6,<7

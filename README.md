@@ -194,3 +194,9 @@ sam3.patch           SAM3 推理补丁（bfloat16 修正、显存释放）
 ## 许可证
 
 本项目以 [GPL-3.0](LICENSE) 开源。第三方代码（SAM3、llama.cpp 等）和模型权重遵循各自的许可证。
+
+### 导入已有标注（Labelme / YOLO）
+
+选择数据集文件夹或 zip / tar 压缩包，会连同已有标注一起导入。YOLO 支持检测框和分割多边形，自动转换为当前项目使用的 Labelme JSON。目录应包含 `images/train`、`labels/train`（以及可选的 val/test），根目录提供 `data.yaml` / `dataset.yaml` 的 `names` 列表或字典，或 `classes.txt`（每行一个类别）。同目录的图片和 TXT 也支持。缺少类别表、非法坐标或不支持的形状会报告失败，不会悄悄丢掉标注；空 TXT 作为负样本导入。
+
+服务器部署时设置 `.env` 的 `LABEL_IMPORT_DIR=/data/migrate`，重新创建 web 容器后，在「服务器路径」填 `/imports/datasetmix` 等容器路径。也可以本地选择整个数据集文件夹，或者上传压缩包。原始图片和标注不修改；同名图片导入后自动改名，并同步更新标注对应关系。标注 JSON 的 `imageData` 固定为空，不嵌入 Base64 图片；图片作为单独文件保存。旧标注在读取、保存或导出时也会清空内嵌图片内容。
