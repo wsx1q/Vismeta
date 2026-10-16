@@ -26,6 +26,8 @@ services:
     volumes:
       - ${LABEL_DATA_DIR:-./data}:/data
       - ${LABEL_MODELS_DIR:-./data/models}:/models
+      # Keep the server dataset path available directly; /imports remains a compatible alias.
+      - ${LABEL_IMPORT_DIR:-./imports}:/data/migrate:ro
       - ${LABEL_IMPORT_DIR:-./imports}:/imports:ro
     environment:
       LABEL_DEVICE: cpu
