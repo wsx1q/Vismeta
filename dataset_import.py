@@ -75,13 +75,17 @@ def yolo_shapes(path, width, height, names):
     return shapes
 
 
-def import_tree(source, project, cap=20000, progress=None):
+def import_tree(source, project, cap=20000, progress=None, transfer='copy'):
+    if transfer not in {'copy', 'move'}:
+        raise ValueError('导入方式仅支持 copy / move')
     source = Path(source).resolve()
     boundary = source if source.is_dir() else source.parent
     images_root = Path(project['images']).resolve()
     annotations_root = Path(project['annotations'])
     images_root.mkdir(parents=True, exist_ok=True)
     annotations_root.mkdir(parents=True, exist_ok=True)
+    if transfer == 'move' and source.stat().st_dev != images_root.stat().st_dev:
+        raise ValueError('移动导入必须在同一个文件系统内；不会退回到慢速复制')
     if progress:
         progress(phase='scanning', processed=0, total=0, count=0, skipped=0, shapes=0)
     images = [source] if source.is_file() else sorted(source.rglob('*'))
@@ -95,6 +99,7 @@ def import_tree(source, project, cap=20000, progress=None):
     annotated = objects = empty = 0
     cache = {}
     cache_lock = threading.Lock()
+    manifest_lock = threading.Lock()
     # Allocate names before dispatch so equal stems across splits cannot race.
     used = {p.stem for root in (images_root, annotations_root) for p in root.iterdir() if p.is_file()}
     work = []
@@ -143,13 +148,26 @@ def import_tree(source, project, cap=20000, progress=None):
         with dest.open('xb'):
             pass
         annotation = annotations_root / (dest.stem + '.json')
+        moved = False
         try:
-            shutil.copy2(image, dest)
+            if transfer == 'move':
+                with manifest_lock:
+                    with (images_root.parent / 'move-import.jsonl').open('a', encoding='utf-8') as handle:
+                        handle.write(json.dumps({'source': str(image), 'image': dest.name,
+                                                 'source_root': str(boundary)}, ensure_ascii=False) + '\n')
+                # rename is metadata-only; EXDEV is deliberately not converted to a copy.
+                image.replace(dest)
+                moved = True
+            else:
+                shutil.copy2(image, dest)
             if doc is not None:
                 doc['imagePath'] = dest.name
                 annotation.write_text(json.dumps(doc, ensure_ascii=False), encoding='utf-8')
         except Exception:
-            dest.unlink(missing_ok=True)
+            if moved:
+                dest.replace(image)
+            else:
+                dest.unlink(missing_ok=True)
             annotation.unlink(missing_ok=True)
             raise
         return dest.name, doc

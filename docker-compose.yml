@@ -24,13 +24,16 @@ services:
     ports:
       - "${LABEL_PORT:-8088}:8088"
     volumes:
-      - ${LABEL_DATA_DIR:-./data}:/data
+      - ${LABEL_STORAGE_ROOT:-${LABEL_DATA_DIR:-./data}}:/data
       - ${LABEL_MODELS_DIR:-./data/models}:/models
       # Keep the server dataset path available directly; /imports remains a compatible alias.
-      - ${LABEL_IMPORT_DIR:-./imports}:/data/migrate:ro
+      - ${LABEL_IMPORT_DIR:-./imports}:${LABEL_IMPORT_ALIAS_TARGET:-/data/migrate}:ro
       - ${LABEL_IMPORT_DIR:-./imports}:/imports:ro
     environment:
       LABEL_DEVICE: cpu
+      LABEL_DATA: ${LABEL_APP_DATA:-/data}
+      IMPORT_MODE: ${IMPORT_MODE:-copy}
+      MOVE_IMPORT_ROOT: ${MOVE_IMPORT_ROOT:-}
       IMPORT_WORKERS: ${IMPORT_WORKERS:-4}
       MALLOC_ARENA_MAX: ${LABEL_MALLOC_ARENA_MAX:-2}
       SAM_CACHE_IDLE_SECONDS: ${SAM_CACHE_IDLE_SECONDS:-120}

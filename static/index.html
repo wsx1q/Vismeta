@@ -249,6 +249,7 @@
       <li><button type="button" data-kind="yolo.zip">YOLO 标签（zip）</button></li>
       <li><button type="button" data-kind="yolo.zip" data-images="1">YOLO 标签 + 图片（zip）</button></li>
       <li><button type="button" data-kind="labelme.zip">labelme JSON（zip）</button></li>
+      <li><button type="button" data-kind="backup-status">查看后台备份</button></li>
     </ul>
   </span>
   <input id="import-files" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp,.txt,.json,.yaml,.yml,.names,image/*" multiple hidden/>
@@ -438,6 +439,8 @@
     <header><h3 id="path-title">从服务器路径导入</h3></header>
     <div class="body">
       <span class="muted">导入图片及 Labelme / YOLO 标注。YOLO 请填数据集根目录，包含 images/、labels/ 和 data.yaml（或 classes.txt）。</span>
+      <label>导入方式 <select id="path-mode"><option value="copy">复制导入（保留源图片）</option><option value="move">同盘移动（速度更快）</option></select></label>
+      <p id="path-mode-help" class="muted"></p>
       <input id="server-path" type="text" placeholder="/data/migrate/数据集目录"/>
       <div id="path-progress-box" hidden>
         <p id="path-progress-text" role="status"></p>
@@ -447,6 +450,14 @@
       <div id="path-result" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></div>
     </div>
     <footer><span class="grow"></span><button type="button" id="path-cancel">取消</button><button type="button" id="path-ok" class="primary">导入</button></footer>
+  </div>
+</div>
+
+<div class="modal" id="backupbox" role="dialog" aria-modal="true" aria-labelledby="backup-title">
+  <div class="dialog" style="width:min(560px,100%)">
+    <header><h3 id="backup-title">后台备份</h3></header>
+    <div class="body" style="padding:16px"><p id="backup-status-text" role="status"></p><progress id="backup-progress" max="100" style="width:100%"></progress><p id="backup-location" style="overflow-wrap:anywhere"></p></div>
+    <footer><span class="grow"></span><button type="button" id="backup-close">关闭</button></footer>
   </div>
 </div>
 
@@ -2338,9 +2349,13 @@ $("import-close").onclick = closeImport;
 $("choose-files").onclick = () => importInputs.files.click();
 $("choose-folder").onclick = () => importInputs.dir.click();
 $("choose-archive").onclick = () => importInputs.zip.click();
-$("import-server").onclick = () => {
+$("import-server").onclick = async () => {
   if (importBusy) return;
   if (pathImportBusy && pathImportTask) { openTrackedPathImport(); return; }
+  const cfg = await (await fetch("/api/import/config")).json();
+  $("path-mode").querySelector('option[value="move"]').disabled = !cfg.move_enabled;
+  $("path-mode").value = cfg.default_mode;
+  updatePathModeHelp();
   closeImport(); $("pathbox").classList.add("show"); $("server-path").focus();
   $("path-title").textContent = "从服务器路径导入 · " + projectName;
   const active = store("path-import:" + projectId);
@@ -2417,6 +2432,7 @@ $("import-start").onclick = async () => {
 };
 bindMenu("export-btn", item => {
   if (!projectId) return;
+  if (item.dataset.kind === "backup-status") { openBackupStatus(); return; }
   const params = new URLSearchParams({project: projectId});
   if (item.dataset.all) params.set("all", "1");
   if (item.dataset.images) params.set("images", "1");
@@ -2523,7 +2539,21 @@ function updateImportTask(job, pid, name) {
   button.title = name + " · " + state + "；点击返回导入窗口";
   button.setAttribute("aria-label", name + " · " + state + "，点击查看导入详情");
 }
-function restorePathImport(projects) {
+async function restorePathImport(projects) {
+  if (pathImportBusy || pathImportTask) return;
+  try {
+    const res = await fetch("/api/import/active");
+    const data = await res.json();
+    if (pathImportBusy || pathImportTask) return;
+    const job = (data.jobs || []).find(item => item.project_id === projectId) || (data.jobs || [])[0];
+    if (job) {
+      store("path-import:" + job.project_id, job.id);
+      store("path-import-source:" + job.project_id, job.source || "");
+      updateImportTask(job, job.project_id, job.project_name);
+      monitorPathImport(job.id, job.project_id, job.project_name);
+      return;
+    }
+  } catch (err) { /* A saved task can still recover progress when discovery is unavailable. */ }
   if (pathImportBusy || pathImportTask) return;
   const project = projects.find(item => store("path-import:" + item.id));
   if (!project) return;
@@ -2542,6 +2572,8 @@ async function openTrackedPathImport() {
   closeImport();
   $("path-title").textContent = "从服务器路径导入 · " + task.name;
   $("server-path").value = store("path-import-source:" + task.pid) || "";
+  $("path-mode").value = task.job.mode || "copy";
+  updatePathModeHelp();
   $("pathbox").classList.add("show");
   renderPathProgress(task.job);
   if (!pathImportBusy && task.job.status === "disconnected") monitorPathImport(task.id, task.pid, task.name);
@@ -2551,6 +2583,7 @@ function pathImportControls(busy) {
   pathImportBusy = busy;
   $("path-ok").disabled = busy;
   $("server-path").disabled = busy;
+  $("path-mode").disabled = busy;
   $("path-cancel").textContent = busy ? "关闭（后台继续）" : "关闭";
 }
 function renderPathProgress(job) {
@@ -2617,6 +2650,12 @@ async function monitorPathImport(jobId, pid, name = projectName) {
     pathImportControls(false);
   }
 }
+function updatePathModeHelp() {
+  $("path-mode-help").textContent = $("path-mode").value === "move"
+    ? "移动后源图片会移到当前项目，原目录将不再保留这些图片。导出时会在后台生成项目备份。"
+    : "复制图片及标注到当前项目，保留源数据。";
+}
+$("path-mode").onchange = updatePathModeHelp;
 $("path-cancel").onclick = () => $("pathbox").classList.remove("show");
 $("server-path").addEventListener("keydown", event => { if (event.key === "Enter") $("path-ok").click(); });
 $("path-ok").onclick = async () => {
@@ -2628,7 +2667,7 @@ $("path-ok").onclick = async () => {
   $("path-result").textContent = "正在创建导入任务…";
   renderPathProgress({phase: "scanning"});
   try {
-    const res = await postJSON("/api/import/path", {path, async: true});
+    const res = await postJSON("/api/import/path", {path, async: true, mode: $("path-mode").value});
     const job = await res.json();
     if (!res.ok) throw new Error(job.error || "导入失败");
     store("path-import:" + pid, job.id);
@@ -2640,6 +2679,29 @@ $("path-ok").onclick = async () => {
     pathImportControls(false);
   }
 };
+
+let backupPoll = null;
+$("backup-close").onclick = () => { $("backupbox").classList.remove("show"); clearTimeout(backupPoll); };
+async function openBackupStatus() {
+  const pid = projectId;
+  clearTimeout(backupPoll);
+  $("backupbox").classList.add("show");
+  $("backup-status-text").textContent = "正在读取备份状态…";
+  async function refresh() {
+    try {
+      const res = await fetch("/api/backup/status", {headers: {"X-Project": pid}});
+      const job = await res.json();
+      if (!res.ok) throw new Error(job.error || "读取失败");
+      const states = {none: "尚未生成备份。移动导入的项目会在导出时自动后台备份。", queued: "备份已排队", running: "正在后台备份", complete: "备份完成", failed: "备份失败：" + (job.error || "未知错误")};
+      const pct = job.total ? Math.floor(job.done / job.total * 100) : 0;
+      $("backup-status-text").textContent = (states[job.status] || job.status) + (job.total ? " · " + pct + "%" : "");
+      $("backup-progress").value = job.status === "complete" ? 100 : pct;
+      $("backup-location").textContent = job.archive ? "服务器备份文件：" + job.archive : "";
+      if (["running", "queued"].includes(job.status) && $("backupbox").classList.contains("show")) backupPoll = setTimeout(refresh, 1500);
+    } catch (err) { $("backup-status-text").textContent = err.message; }
+  }
+  await refresh();
+}
 
 // ---------- 大模型设置 ----------
 const PROMPT_TEMPLATES = [

@@ -4,8 +4,8 @@ new vm.Script(script);
 const elements=new Map();
 const $=id=>{if(!elements.has(id))elements.set(id,{hidden:true,dataset:{},classList:{add(){this.shown=true;},remove(){this.shown=false;}},setAttribute(k,v){this[k]=v;}});return elements.get(id);};
 let enters=0,polls=0,mayLeave=false;
-const sandbox={$,projectId:'other',projectName:'Other',store:key=>key==='path-import:task-project'?'job-123':key==='path-import-source:task-project'?'/data/migrate/demo':'',
- leaveCurrent:async()=>mayLeave,enterProject:async(id)=>{enters++;sandbox.projectId=id;},closeImport(){},renderPathProgress(){},monitorPathImport(){polls++;}};
+const sandbox={$,fetch:async()=>({json:async()=>({jobs:[]})}),projectId:'other',projectName:'Other',store:key=>key==='path-import:task-project'?'job-123':key==='path-import-source:task-project'?'/data/migrate/demo':'',
+ leaveCurrent:async()=>mayLeave,enterProject:async(id)=>{enters++;sandbox.projectId=id;},closeImport(){},updatePathModeHelp(){},renderPathProgress(){},monitorPathImport(){polls++;}};
 const ctx=vm.createContext(sandbox);
 vm.runInContext(script.slice(script.indexOf('let pathImportBusy = false;'),script.indexOf('function pathImportControls')),ctx);
 (async()=>{
@@ -22,8 +22,8 @@ vm.runInContext(script.slice(script.indexOf('let pathImportBusy = false;'),scrip
  ctx.updateImportTask({id:'job-123',status:'failed'},'task-project','安全带');
  assert.equal($('import-task').dataset.status,'failed');
  vm.runInContext('pathImportTask = null;',ctx);
- ctx.restorePathImport([{id:'task-project',name:'安全带'}]);
- ctx.restorePathImport([{id:'task-project',name:'安全带'}]);
+ await ctx.restorePathImport([{id:'task-project',name:'安全带'}]);
+ await ctx.restorePathImport([{id:'task-project',name:'安全带'}]);
  assert.equal(polls,1,'recover one poller after refresh');
  console.log('PASS: persistent progress badge, project navigation, unsaved-change guard, source path, completion/failure and refresh recovery');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -952,6 +952,14 @@ def export(kind):
     import io
     import zipfile
     proj = current_project()
+    with IMPORT_JOBS_LOCK:
+        if any(job['project_id'] == proj['id'] and job['status'] == 'running'
+               for job in IMPORT_JOBS.values()):
+            return jsonify({'error': '项目仍在导入，请完成后再导出和备份'}), 409
+    if kind not in {'vlm.jsonl', 'yolo.zip', 'labelme.zip'}:
+        abort(404)
+    import project_backups
+    project_backups.schedule(DATA_ROOT, proj)
     with_images = request.args.get("images") == "1"
     stamp = time.strftime("%Y%m%d_%H%M%S")
     if kind == "vlm.jsonl":
@@ -975,7 +983,9 @@ def export(kind):
     if kind not in {"yolo.zip", "labelme.zip"}:
         abort(404)
     import tempfile
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    export_root = DATA_ROOT / '.exports'
+    export_root.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", dir=export_root)
     tmp.close()
     names = project_label_names(proj)
     with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -1004,7 +1014,7 @@ def export(kind):
                         names.index(label), (x1 + x2) / 2 / w, (y1 + y2) / 2 / h, (x2 - x1) / w, (y2 - y1) / h))
                 archive.writestr("labels/" + path.stem + ".txt", "\n".join(rows) + "\n")
             if with_images:
-                archive.write(path, "images/" + path.name)
+                archive.write(path, "images/" + path.name, compress_type=zipfile.ZIP_STORED)
         if kind == "yolo.zip":
             archive.writestr("classes.txt", "\n".join(names) + "\n")
             archive.writestr("data.yaml", "path: .\ntrain: images\nval: images\nnames:\n" + "".join(
@@ -1013,6 +1023,12 @@ def export(kind):
                          download_name="%s_%s_%s" % (proj["name"], kind.replace(".zip", ""), stamp) + ".zip")
     response.call_on_close(lambda: Path(tmp.name).unlink(missing_ok=True))
     return response
+
+
+@app.get('/api/backup/status')
+def backup_status():
+    import project_backups
+    return jsonify(project_backups.status(DATA_ROOT, current_project()['id']))
 
 
 @app.post("/api/texts/stop")
@@ -1103,6 +1119,16 @@ def import_job_snapshot(job):
     return {k: v for k, v in job.items() if k != 'project_id'}
 
 
+@app.get('/api/import/active')
+def active_import_jobs():
+    projects = {item['id']: item['name'] for item in load_projects()}
+    with IMPORT_JOBS_LOCK:
+        return jsonify({'jobs': [{**import_job_snapshot(job), 'project_id': job['project_id'],
+                                  'project_name': projects[job['project_id']]}
+                                 for job in IMPORT_JOBS.values()
+                                 if job['status'] == 'running' and job['project_id'] in projects]})
+
+
 @app.get("/api/import/jobs/<job_id>")
 def import_job_status(job_id):
     project = current_project()
@@ -1113,7 +1139,7 @@ def import_job_status(job_id):
         return jsonify(import_job_snapshot(job))
 
 
-def start_path_import(src, project):
+def start_path_import(src, project, mode='copy'):
     from dataset_import import import_tree
     with IMPORT_JOBS_LOCK:
         for key in list(IMPORT_JOBS):
@@ -1129,7 +1155,7 @@ def start_path_import(src, project):
                 return jsonify({'error': '导入任务过多，请稍后重试'}), 429
             del IMPORT_JOBS[finished[0]]
         job_id = uuid.uuid4().hex
-        job = {'id': job_id, 'project_id': project['id'], 'status': 'running', 'phase': 'scanning',
+        job = {'id': job_id, 'project_id': project['id'], 'mode': mode, 'source': str(src), 'status': 'running', 'phase': 'scanning',
                'processed': 0, 'total': 0, 'count': 0, 'skipped': 0, 'shapes': 0, 'updated': time.time()}
         IMPORT_JOBS[job_id] = job
         snapshot = import_job_snapshot(job)
@@ -1140,7 +1166,8 @@ def start_path_import(src, project):
 
     def worker():
         try:
-            result = import_tree(src, project, IMPORT_CAP, progress=update)
+            options = {'transfer': 'move'} if mode == 'move' else {}
+            result = import_tree(src, project, IMPORT_CAP, progress=update, **options)
             update(status='complete', phase='complete', result=result)
         except Exception as exc:
             update(status='failed', phase='failed', error=str(exc))
@@ -1186,12 +1213,33 @@ def import_server_path():
         return jsonify({"error": "请填服务器绝对路径，例如 /data/dataset"}), 400
     if not src.exists():
         return jsonify({"error": "路径不存在"}), 400
+    mode = body.get('mode') or os.environ.get('IMPORT_MODE', 'copy')
+    if mode not in {'copy', 'move'}:
+        return jsonify({'error': '未知导入方式'}), 400
+    if mode == 'move':
+        allowed = os.environ.get('MOVE_IMPORT_ROOT', '')
+        if not allowed:
+            return jsonify({'error': '当前部署未启用移动导入'}), 400
+        allowed = Path(allowed).resolve()
+        # Old /imports bookmarks still refer to the same dataset directory.
+        if Path('/imports') in src.parents:
+            src = allowed / src.relative_to('/imports')
+        src = src.resolve()
+        if src != allowed and allowed not in src.parents:
+            return jsonify({'error': '移动导入仅限配置的数据集目录'}), 400
     if body.get("async"):
-        return start_path_import(src, current_project())
+        return start_path_import(src, current_project(), mode)
     try:
-        return jsonify(import_tree(src, current_project(), IMPORT_CAP))
+        options = {'transfer': 'move'} if mode == 'move' else {}
+        return jsonify(import_tree(src, current_project(), IMPORT_CAP, **options))
     except (ValueError, OSError) as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+@app.get('/api/import/config')
+def import_config():
+    return jsonify({'default_mode': os.environ.get('IMPORT_MODE', 'copy'),
+                    'move_enabled': bool(os.environ.get('MOVE_IMPORT_ROOT'))})
 
 
 def warmup_sam3():
