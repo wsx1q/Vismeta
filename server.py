@@ -1060,6 +1060,23 @@ def create_project():
     return jsonify({"id": pid, "name": name})
 
 
+@app.patch("/api/projects/<pid>")
+def rename_project(pid):
+    body = request.get_json(force=True) or {}
+    name = str(body.get("name") or "").strip()
+    if not name or len(name) > 40:
+        return jsonify({"error": "项目名称须为 1～40 个字符"}), 400
+    rows = load_projects()
+    item = next((row for row in rows if row.get("id") == pid), None)
+    if item is None:
+        return jsonify({"error": "项目不存在"}), 404
+    if any(row.get("id") != pid and row.get("name") == name for row in rows):
+        return jsonify({"error": "已经有同名项目"}), 400
+    item["name"] = name
+    save_projects(rows)
+    return jsonify({"id": pid, "name": name})
+
+
 @app.delete("/api/projects/<pid>")
 def delete_project(pid):
     rows = load_projects()
@@ -1084,7 +1101,9 @@ def import_files():
     """Import images with Labelme / YOLO sidecars, preserving uploaded paths."""
     import tempfile
     from dataset_import import import_tree, extract_archive
-    with tempfile.TemporaryDirectory() as tmp:
+    staging = DATA_ROOT / ".imports"
+    staging.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="upload-", dir=staging) as tmp:
         root = Path(tmp) / "dataset"
         root.mkdir()
         try:

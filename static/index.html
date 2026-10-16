@@ -179,6 +179,24 @@
   .dialog > footer { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); }
   #pathbox .dialog { width: min(520px, 100%); }
   #pathbox .body { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  #rename-modal .dialog { width: min(440px, 100%); }
+  #rename-modal .body { padding: 16px; display: grid; gap: 10px; }
+  .inline-error { color: var(--red); font-size: 13px; white-space: pre-wrap; }
+  #import-modal .dialog { width: min(760px, 100%); }
+  #import-modal .body { padding: 18px; overflow: auto; display: grid; gap: 14px; }
+  #import-drop { padding: 24px 16px; border: 2px dashed var(--line2); border-radius: 10px; background: var(--bg2); text-align: center; outline-offset: 3px; }
+  #import-drop.dragging { border-color: var(--blue); background: var(--hover); }
+  #import-drop h4 { margin: 0 0 8px; font-size: 18px; }
+  #import-modal p { margin: 0; line-height: 1.6; }
+  .import-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
+  #import-selection { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  #import-file-list { margin-top: 8px; font-size: 12px; line-height: 1.7; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 130px; overflow: auto; }
+  #import-modal details { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  #import-modal summary { cursor: pointer; font-size: 13px; }
+  #import-modal pre { padding: 10px; margin: 10px 0; background: var(--bg2); border-radius: 6px; font-size: 12px; line-height: 1.6; }
+  #import-classes { width: 100%; min-height: 70px; margin-top: 8px; }
+  #import-progress { width: 100%; height: 8px; accent-color: var(--blue); }
+  #import-result { white-space: pre-wrap; font-size: 13px; line-height: 1.7; }
   #vlm-modal .dialog { width: min(1180px, 100%); height: min(900px, 100%); }
   .vlm-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 340px minmax(0, 1fr); }
   .vlm-col { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
@@ -213,17 +231,9 @@
 <body>
 <header id="top">
   <button type="button" id="to-projects" title="返回项目列表">◂ 项目</button>
-  <span id="proj-name"></span>
+  <button type="button" id="proj-name" title="修改项目名称"></button>
   <span class="sep"></span>
-  <span class="pick" id="import-pick">
-    <button type="button" class="caret" id="import-local">导入</button>
-    <ul class="pick-menu" hidden>
-      <li><button type="button" data-kind="files">本地图片</button></li>
-      <li><button type="button" data-kind="dir">本地文件夹</button></li>
-      <li><button type="button" data-kind="zip">本地压缩包</button></li>
-      <li><button type="button" data-kind="server">服务器路径…</button></li>
-    </ul>
-  </span>
+  <button type="button" id="import-local">导入图片 / 数据集</button>
   <span class="pick" id="export-pick">
     <button type="button" class="caret" id="export-btn">导出</button>
     <ul class="pick-menu" hidden>
@@ -366,6 +376,55 @@
   <div id="project-list"></div>
 </div>
 
+<div class="modal" id="rename-modal" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+  <form class="dialog" id="rename-form">
+    <header><h3 id="rename-title">修改项目名称</h3></header>
+    <div class="body">
+      <label for="rename-input">项目名称</label>
+      <input id="rename-input" type="text" maxlength="40" required autocomplete="off"/>
+      <span class="muted">修改名称后，图片、标注和项目设置都会保留。</span>
+      <div id="rename-error" class="inline-error" role="alert"></div>
+    </div>
+    <footer><span class="grow"></span><button type="button" id="rename-cancel">取消</button><button type="submit" id="rename-save" class="primary">保存名称</button></footer>
+  </form>
+</div>
+
+<div class="modal" id="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title">
+  <div class="dialog">
+    <header><h3 id="import-title">从本地导入</h3><span class="grow"></span><button type="button" id="import-close" aria-label="关闭导入窗口">×</button></header>
+    <div class="body">
+      <section id="import-drop" tabindex="0" aria-label="拖入图片、数据集文件夹或压缩包">
+        <h4>把图片或数据集拖到这里</h4>
+        <p class="muted">支持文件夹、ZIP / TAR 压缩包，以及图片和标注文件。也可以点击选择。</p>
+        <div class="import-buttons">
+          <button type="button" id="choose-files">选择文件</button>
+          <button type="button" id="choose-folder" class="primary">选择数据集文件夹</button>
+          <button type="button" id="choose-archive">选择压缩包</button>
+        </div>
+      </section>
+      <div id="import-selection" hidden><b id="import-summary"></b><div id="import-file-list"></div></div>
+      <details id="yolo-guide">
+        <summary>YOLO 格式怎么导入？</summary>
+        <p class="muted">选择整个数据集根文件夹，或把它压缩成 ZIP 后拖入。图片与 TXT 要同名；检测框和分割多边形都支持。</p>
+        <pre>我的数据集/
+├─ data.yaml 或 classes.txt
+├─ images/train/001.jpg
+└─ labels/train/001.txt</pre>
+        <p class="muted">也支持 images/001.jpg + labels/001.txt，以及 train/images + train/labels。data.yaml 的 names 写类别名称；classes.txt 每行一个类别，顺序对应编号 0、1、2……。不要只选 images 文件夹，否则不会带入标注。</p>
+      </details>
+      <details id="manual-classes">
+        <summary>没有类别表？在这里填写 YOLO 类别名称</summary>
+        <label for="import-classes" class="muted">每行一个，按编号从 0 开始排列。例如第一行 helmet，第二行 vest。</label>
+        <textarea id="import-classes" placeholder="helmet&#10;vest"></textarea>
+      </details>
+      <div id="import-warning" class="inline-error" role="alert"></div>
+      <div id="import-progress-box" hidden><p id="import-progress-text" role="status"></p><progress id="import-progress" max="100" value="0"></progress></div>
+      <div id="import-result" role="status"></div>
+    </div>
+    <footer><button type="button" id="import-server">从服务器目录导入…</button><span class="grow"></span><button type="button" id="import-reset">清空选择</button><button type="button" id="import-start" class="primary" disabled>开始导入</button></footer>
+  </div>
+</div>
+
 <div class="modal" id="pathbox">
   <div class="dialog">
     <header><h3>从服务器路径导入</h3></header>
@@ -451,6 +510,7 @@
   </div>
 </div>
 
+<script src="/static/import-utils.js"></script>
 <script>
 let projectId = "";
 let projectName = "";
@@ -2038,7 +2098,7 @@ $("new-label").addEventListener("keydown", event => { if (event.key === "Enter")
 
 window.addEventListener("keydown", event => {
   if (document.querySelector(".modal.show") || $("projects").classList.contains("show")) {
-    if (event.key === "Escape") { closeVlm(); $("pathbox").classList.remove("show"); }
+    if (event.key === "Escape") { closeVlm(); closeImport(); $("rename-cancel").click(); $("pathbox").classList.remove("show"); }
     return;
   }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
@@ -2138,6 +2198,7 @@ async function loadProjects() {
     card.querySelector(".bar span").style.width = ratio + "%";
     const actions = card.querySelector(".actions");
     actions.appendChild(rowButton("进入", () => enterProject(item.id, item.name), {className: "primary"}));
+    actions.appendChild(rowButton("改名", () => editProjectName(item)));
     if (!item.builtin) actions.appendChild(rowButton("删除", () => removeProject(item)));
     box.appendChild(card);
   }
@@ -2146,7 +2207,7 @@ async function enterProject(id, name) {
   projectId = id;
   projectName = name;
   $("proj-name").textContent = name;
-  $("proj-name").title = name;
+  $("proj-name").title = name + " · 点击修改名称";
   document.title = name + " · Vismeta";
   $("projects").classList.remove("show");
   $("q").value = "";
@@ -2186,25 +2247,134 @@ $("new-project").onsubmit = async event => {
   loadProjects();
 };
 $("to-projects").onclick = showProjects;
+let renameItem = null;
+function editProjectName(item) {
+  renameItem = item;
+  $("rename-input").value = item.name;
+  $("rename-error").textContent = "";
+  $("rename-modal").classList.add("show");
+  $("rename-input").focus();
+  $("rename-input").select();
+}
+$("proj-name").onclick = () => { if (projectId) editProjectName({id: projectId, name: projectName}); };
+$("rename-cancel").onclick = () => { if (!$("rename-save").disabled) $("rename-modal").classList.remove("show"); };
+$("rename-form").onsubmit = async event => {
+  event.preventDefault();
+  const name = $("rename-input").value.trim();
+  if (!name || !renameItem) return;
+  $("rename-save").disabled = true;
+  $("rename-error").textContent = "";
+  try {
+    const res = await fetch("/api/projects/" + encodeURIComponent(renameItem.id), {
+      method: "PATCH", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "改名失败");
+    if (projectId === data.id) {
+      projectName = data.name;
+      $("proj-name").textContent = data.name;
+      $("proj-name").title = data.name + " · 点击修改名称";
+      document.title = data.name + " · Vismeta";
+    }
+    $("rename-modal").classList.remove("show");
+    await loadProjects();
+  } catch (err) { $("rename-error").textContent = err.message || "改名失败"; }
+  finally { $("rename-save").disabled = false; }
+};
 
 // ---------- 导入 / 导出 ----------
 const importInputs = {files: $("import-files"), dir: $("import-dir"), zip: $("import-zip")};
-bindMenu("import-local", item => {
+let importSelection = [], importBusy = false, importReading = false, importProjectId = "";
+function openImport() {
   if (!projectId) return;
-  if (item.dataset.kind === "server") {
-    $("pathbox").classList.add("show");
-    $("server-path").focus();
-    return;
+  if (importProjectId !== projectId) {
+    importSelection = []; $("import-classes").value = "";
+    $("import-result").textContent = ""; $("import-progress-box").hidden = true;
+    importProjectId = projectId;
+    renderImportSelection();
   }
-  importInputs[item.dataset.kind].click();
-});
+  $("import-title").textContent = "导入到「" + projectName + "」";
+  $("import-modal").classList.add("show");
+}
+function closeImport() { if (!importBusy && !importReading) $("import-modal").classList.remove("show"); }
+$("import-local").onclick = openImport;
+$("import-close").onclick = closeImport;
+$("choose-files").onclick = () => importInputs.files.click();
+$("choose-folder").onclick = () => importInputs.dir.click();
+$("choose-archive").onclick = () => importInputs.zip.click();
+$("import-server").onclick = () => {
+  if (importBusy) return;
+  closeImport(); $("pathbox").classList.add("show"); $("server-path").focus();
+};
+function renderImportSelection() {
+  const plan = ImportFiles.plan(importSelection);
+  const images = plan.media.filter(f => ImportFiles.image.test(f.name)).length;
+  const archives = plan.media.length - images;
+  const annotations = plan.companions.filter(f => !ImportFiles.isClasses(f)).length;
+  const missingClasses = plan.companions.some(f => /\.txt$/i.test(f.name) && !ImportFiles.isClasses(f))
+    && !plan.companions.some(ImportFiles.isClasses) && !$("import-classes").value.trim();
+  $("import-selection").hidden = !importSelection.length;
+  const bytes = importSelection.reduce((sum, file) => sum + file.size, 0);
+  $("import-summary").textContent = images + " 张图片 · " + annotations + " 份标注 · " + archives + " 个压缩包 · " + (bytes / 1024 / 1024).toFixed(1) + " MB";
+  $("import-file-list").textContent = importSelection.slice(0, 6).map(ImportFiles.path).join("\n") + (importSelection.length > 6 ? "\n…另有 " + (importSelection.length - 6) + " 个文件" : "");
+  $("import-warning").textContent = missingClasses ? "已检测到 YOLO TXT，但缺少类别表。请补选 data.yaml / classes.txt，或在上方按编号填写类别。"
+    : plan.ignored ? "将忽略 " + plan.ignored + " 个不支持的文件。" : "";
+  $("import-start").disabled = importBusy || importReading || !plan.media.length || missingClasses;
+}
+function stageImportFiles(files) {
+  const selected = new Map(importSelection.map(file => [ImportFiles.path(file), file]));
+  files.forEach(file => selected.set(ImportFiles.path(file), file));
+  importSelection = [...selected.values()];
+  $("import-result").textContent = "";
+  $("import-progress-box").hidden = true;
+  renderImportSelection();
+}
+$("import-classes").oninput = renderImportSelection;
+$("import-reset").onclick = () => {
+  if (importBusy) return;
+  importSelection = []; $("import-classes").value = "";
+  $("import-result").textContent = ""; $("import-progress-box").hidden = true;
+  renderImportSelection();
+};
 Object.values(importInputs).forEach(input => {
   input.onchange = async event => {
     const files = [...event.target.files];
     event.target.value = "";
-    if (files.length) await importLocal(files);
+    if (files.length) stageImportFiles(files);
   };
 });
+$("import-drop").onkeydown = event => {
+  if (event.target === $("import-drop") && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); importInputs.files.click(); }
+};
+window.addEventListener("dragover", event => {
+  if ([...(event.dataTransfer?.types || [])].includes("Files")) event.preventDefault();
+});
+$("import-drop").addEventListener("dragover", event => { if (!importBusy) $("import-drop").classList.add("dragging"); });
+$("import-drop").addEventListener("dragleave", event => { if (!$("import-drop").contains(event.relatedTarget)) $("import-drop").classList.remove("dragging"); });
+window.addEventListener("drop", async event => {
+  if (![...(event.dataTransfer?.types || [])].includes("Files")) return;
+  event.preventDefault(); $("import-drop").classList.remove("dragging");
+  if (!projectId || $("projects").classList.contains("show")) { alert("请先进入要导入的项目，再拖入数据集。"); return; }
+  if (importBusy || importReading) return;
+  openImport();
+  importReading = true;
+  renderImportSelection();
+  $("import-result").textContent = "正在读取拖入的文件夹和文件…";
+  let readError = "";
+  try { stageImportFiles(await ImportFiles.droppedFiles(event.dataTransfer)); }
+  catch (err) { readError = "读取拖入文件失败：" + err.message; }
+  finally {
+    importReading = false; renderImportSelection();
+    if (readError) { $("import-warning").textContent = readError; $("import-result").textContent = ""; }
+  }
+});
+$("import-start").onclick = async () => {
+  if (importBusy || importReading) return;
+  const files = [...importSelection];
+  const classes = $("import-classes").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (classes.length) files.push(new File([classes.join("\n") + "\n"], "classes.txt", {type: "text/plain"}));
+  await importLocal(files);
+};
 bindMenu("export-btn", item => {
   if (!projectId) return;
   const params = new URLSearchParams({project: projectId});
@@ -2217,51 +2387,80 @@ bindMenu("export-btn", item => {
 });
 const IMAGE_EXT = /\.(jpe?g|png|bmp|webp)$/i;
 const ARCHIVE_EXT = /\.(zip|tar|tgz|tar\.gz|tar\.bz2|tar\.xz)$/i;
+function uploadImportBatch(files, onProgress, onUploaded) {
+  return new Promise((resolve, reject) => {
+    const body = new FormData();
+    files.forEach(file => body.append("files", file, ImportFiles.path(file)));
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/import/files");
+    xhr.setRequestHeader("X-Project", projectId);
+    xhr.responseType = "json";
+    xhr.upload.onprogress = event => { if (event.lengthComputable) onProgress(event.loaded / event.total); };
+    xhr.upload.onload = onUploaded;
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300 && xhr.response) resolve(xhr.response);
+      else reject(new Error(xhr.response?.error || "导入失败（HTTP " + xhr.status + "）"));
+    };
+    xhr.onerror = () => reject(new Error("连接中断，请检查网络后重试。"));
+    xhr.onabort = () => reject(new Error("上传已取消。"));
+    xhr.send(body);
+  });
+}
 async function importLocal(all) {
-  if (!projectId) return;
-  const sidecars = all.filter(f => /\.(txt|json|yaml|yml|names)$/i.test(f.name));
-  const files = all.filter(f => IMAGE_EXT.test(f.name) || ARCHIVE_EXT.test(f.name));
-  const ignored = all.length - files.length - sidecars.length;
-  if (!files.length) { toastCenter("没有可导入的图片或压缩包" + (ignored ? "（忽略了 " + ignored + " 个其他文件）" : ""), "err"); return; }
-  // 压缩包单独发；图片按 200 张一批，避免一次请求太大。
-  const batches = [];
-  let cur = [];
-  let curBytes = 0;
-  for (const f of files) {
-    if (ARCHIVE_EXT.test(f.name)) { batches.push([f]); continue; }
-    if (cur.length >= 200 || curBytes + f.size > 400 * 1024 * 1024) { batches.push(cur); cur = []; curBytes = 0; }
-    cur.push(f);
-    curBytes += f.size;
-  }
-  if (cur.length) batches.push(cur);
-  let count = 0, annotated = 0, skipped = ignored, sent = 0;
-  const bad = [];
+  if (!projectId || importBusy) return;
+  const plan = ImportFiles.plan(all);
+  if (!plan.media.length) { $("import-warning").textContent = "请选择图片、数据集文件夹或 ZIP / TAR 压缩包。"; return; }
+  importBusy = true;
+  const controls = ["choose-files", "choose-folder", "choose-archive", "import-reset", "import-server", "import-close", "import-start", "import-classes"];
+  controls.forEach(id => $(id).disabled = true);
+  $("import-progress-box").hidden = false;
+  $("import-progress").value = 0;
+  $("import-result").textContent = "";
+  $("import-warning").textContent = "";
+  let count = 0, annotated = 0, shapes = 0, skipped = plan.ignored;
+  const errors = [];
+  let failureMessage = "";
   try {
-    for (const batch of batches) {
-      const body = new FormData();
-      batch.forEach(file => body.append("files", file, file.webkitRelativePath || file.name));
-      // Repeat metadata and only the sidecars paired with this batch of images.
-      const stems = new Set(batch.map(f => f.name.replace(/\.[^.]+$/, "")));
-      sidecars.filter(f => /\.(yaml|yml|names)$/i.test(f.name) || /^(classes|obj)\.txt$/i.test(f.name) || stems.has(f.name.replace(/\.[^.]+$/, ""))).forEach(file => body.append("files", file, file.webkitRelativePath || file.name));
-      sent += batch.length;
-      toastCenter("正在导入 " + sent + " / " + files.length + (ARCHIVE_EXT.test(batch[0].name) ? "（解压 " + batch[0].name + "）" : "") + "…", "busy");
-      const res = await fetch("/api/import/files", {method: "POST", body});
-      const data = await res.json();
-      if (!res.ok) { toastCenter(data.error || "导入失败", "err"); return; }
-      count += data.count || 0;
-      annotated += data.annotated || 0;
-      if (data.errors) bad.push(...data.errors);
+    for (let i = 0; i < plan.batches.length; i++) {
+      const prefix = "第 " + (i + 1) + " / " + plan.batches.length + " 批";
+      $("import-progress-text").textContent = prefix + "：正在上传…";
+      const data = await uploadImportBatch(plan.batches[i], ratio => {
+        $("import-progress").value = (i + ratio) / plan.batches.length * 100;
+        $("import-progress-text").textContent = prefix + "：上传 " + Math.round(ratio * 100) + "%";
+      }, () => { $("import-progress-text").textContent = prefix + "：上传完成，正在整理图片和标注…"; });
+      count += data.count || 0; annotated += data.annotated || 0; shapes += data.shapes || 0;
       skipped += data.skipped || 0;
-      if (data.error_archives) bad.push(...data.error_archives);
+      if (data.errors) errors.push(...data.errors);
     }
-    toastCenter(bad.length ? "部分文件未导入：" + bad.join("，") : "", bad.length ? "err" : "");
-    setStatus("已导入 " + count + " 张，含标注 " + annotated + " 张" + (skipped ? "，跳过 " + skipped + " 个" : ""));
-    await loadLabels();
-    reloadList();
+    $("import-progress").value = 100;
+    $("import-progress-text").textContent = "导入完成";
+    $("import-result").textContent = "已导入 " + count + " 张图片，其中 " + annotated + " 张有标注，共 " + shapes + " 个目标。"
+      + (skipped ? "\n跳过或失败 " + skipped + " 个文件。" : "")
+      + (errors.length ? "\n" + errors.slice(0, 10).join("\n") : "")
+      + "\n图片和标注已保存到当前项目，标注 JSON 不内嵌图片数据。";
+    importSelection = [];
+    $("import-classes").value = "";
+    setStatus("已导入 " + count + " 张 · 含标注 " + annotated + " 张 · " + shapes + " 个目标");
   } catch (err) {
-    toastCenter(err.message || "导入失败", "err");
+    $("import-progress-text").textContent = "导入未完成";
+    failureMessage = err.message || "导入失败";
+    $("import-warning").textContent = failureMessage;
+    $("import-result").textContent = count ? "此前批次已保存 " + count + " 张图片。请只重新选择尚未导入的文件，以免重复导入。" : "请检查所选文件和类别表后重试。";
+    if (count) importSelection = [];
+  } finally {
+    importBusy = false;
+    controls.forEach(id => $(id).disabled = false);
+    renderImportSelection();
+    // Keep the specific server error visible after refreshing the selection summary.
+    if (failureMessage) $("import-warning").textContent = failureMessage;
+    else if (errors.length) $("import-warning").textContent = "部分文件导入失败，详情见下方结果。";
+    if (count) {
+      await loadLabels(); await reloadList();
+      if (index < 0 && items.length) await openAt(0);
+    }
   }
 }
+
 $("path-cancel").onclick = () => $("pathbox").classList.remove("show");
 $("server-path").addEventListener("keydown", event => { if (event.key === "Enter") $("path-ok").click(); });
 $("path-ok").onclick = async () => {
