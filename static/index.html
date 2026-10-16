@@ -96,6 +96,8 @@
   .recent .x:hover { color: var(--red); }
   #stage-wrap { min-width: 0; min-height: 0; overflow: auto; position: relative; display: flex; }
   #stage { position: relative; margin: auto; width: fit-content; flex: none; }
+  #stage[hidden], #empty-project[hidden] { display: none; }
+  #empty-project { margin: auto; padding: 24px; text-align: center; color: var(--muted); line-height: 2; }
   #photo { display: block; max-width: none; max-height: none; }
   #overlay { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
   #statusbar { display: flex; align-items: center; gap: 12px; padding: 4px 10px; background: var(--bg2); border-top: 1px solid var(--line); font-size: 12px; min-width: 0; }
@@ -317,7 +319,8 @@
       <button type="button" id="commit" title="F：把红色候选加入标注">确认</button>
     </div>
     <div id="stage-wrap">
-      <div id="stage">
+      <div id="empty-project" hidden>这个项目还没有图片<br/>点击左上角「导入图片 / 数据集」开始添加</div>
+      <div id="stage" hidden>
         <img id="photo" alt=""/>
         <canvas id="overlay"></canvas>
       </div>
@@ -562,6 +565,7 @@ let history = [];
 let busy = false;
 let seq = 0;
 let shapeSeq = 1;
+let imageLoadSeq = 0;
 let viewScale = 1;
 let modeName = "point";
 let modeBeforePan = "point";
@@ -771,10 +775,10 @@ $("label").onchange = () => {
 async function preload() {
   const spec = currentModel();
   if (!spec) return;
-  setStatus("正在加载 " + spec.name + " …");
+  if (index >= 0) setStatus("正在加载 " + spec.name + " …");
   try {
     const data = await (await postJSON("/api/load", {model: modelName()})).json();
-    if (data.ok) setStatus(spec.name + " 已就绪");
+    if (data.ok) { if (index >= 0) setStatus(spec.name + " 已就绪"); }
     else toastCenter("加载失败：" + data.error, "err");
   } catch (err) {
     toastCenter("加载失败：" + err, "err");
@@ -1393,7 +1397,11 @@ async function leaveCurrent() {
 async function openAt(i) {
   if (busy || i < 0 || i >= items.length) return;
   if (i !== index && !(await leaveCurrent())) return;
+  const ticket = ++imageLoadSeq;
+  const imageProject = projectId;
   index = i;
+  $("empty-project").hidden = true;
+  $("stage").hidden = true;
   points = [];
   draftBox = null;
   polyDraft = [];
@@ -1417,7 +1425,7 @@ async function openAt(i) {
   if (row) row.scrollIntoView({block: "nearest"});
   toastCenter("正在打开 " + item.name, "busy");
   const ann = await (await fetch("/api/annotation/" + encodeURIComponent(item.name))).json();
-  if (index !== i) return;
+  if (ticket !== imageLoadSeq || projectId !== imageProject || index !== i) return;
   saved = hydrate(ann.shapes || []);
   savedSnapshot = shapesKey();
   setTexts(ann.texts);
@@ -1429,13 +1437,15 @@ async function openAt(i) {
     await new Promise((resolve, reject) => {
       photo.onload = resolve;
       photo.onerror = () => reject(new Error("图片打不开"));
-      photo.src = "/api/image/" + encodeURIComponent(item.name) + "?project=" + encodeURIComponent(projectId);
+      photo.src = "/api/image/" + encodeURIComponent(item.name) + "?project=" + encodeURIComponent(imageProject);
     });
   } catch (err) {
+    if (ticket !== imageLoadSeq || projectId !== imageProject) return;
     toastCenter(err.message || "图片打不开", "err");
     return;
   }
-  if (index !== i) return;
+  if (ticket !== imageLoadSeq || projectId !== imageProject || index !== i) return;
+  $("stage").hidden = false;
   layout();
   toastCenter("");
   store("label-place:" + projectId, item.name);
@@ -1447,7 +1457,7 @@ window.addEventListener("beforeunload", event => {
 
 // ---------- 画布 ----------
 function layout() {
-  if (!photo.naturalWidth) return;
+  if (index < 0 || $("stage").hidden || !photo.naturalWidth) return;
   const maxW = Math.max(1, stageWrap.clientWidth - 24);
   const maxH = Math.max(1, stageWrap.clientHeight - 24);
   const fit = Math.min(maxW / photo.naturalWidth, maxH / photo.naturalHeight);
@@ -2156,7 +2166,18 @@ window.addEventListener("keydown", event => {
 
 // ---------- 项目 ----------
 function wipeView() {
+  ++imageLoadSeq;
   index = -1;
+  $("stage").hidden = true;
+  $("empty-project").hidden = true;
+  photo.style.width = "";
+  photo.style.height = "";
+  viewScale = 1;
+  stageWrap.scrollLeft = stageWrap.scrollTop = 0;
+  $("zoom").textContent = "适应窗口";
+  $("zoom").title = "完整显示图片，重置为适应窗口";
+  setStatus("选择左侧一张图片");
+  toastCenter("");
   points = [];
   draftBox = null;
   polyDraft = [];
@@ -2224,7 +2245,10 @@ async function enterProject(id, name) {
   if (i < 0) i = items.length ? 0 : -1;
   index = -1;
   if (i >= 0) await openAt(i);
-  else setStatus("这个项目还没有图片，点左上角「导入」");
+  else {
+    $("empty-project").hidden = false;
+    setStatus("这个项目还没有图片，点左上角「导入图片 / 数据集」");
+  }
   preload();
 }
 async function removeProject(item) {
