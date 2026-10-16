@@ -1,0 +1,18 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const html=fs.readFileSync('static/index.html','utf8');
+const script=html.match(/<script>\s*([\s\S]*?)<\/script>/)[1];new vm.Script(script);
+const elements=new Map();const $=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
+const ctx=vm.createContext({$});
+vm.runInContext(script.slice(script.indexOf('function renderPathResult(data) {'),script.indexOf('async function monitorPathImport')),ctx);
+const errors=Array.from({length:30},(_,i)=>'very-long-image-name-'.repeat(12)+i+'.txt 第 1 行：缺少类别表或类别编号不存在，请提供 data.yaml / classes.txt');
+ctx.renderPathResult({count:0,annotated:0,shapes:0,skipped:264,errors});
+assert($('path-result').textContent.length<250);
+assert.match($('path-result').textContent,/缺少 YOLO 类别表/);
+assert.match($('path-result').textContent,/导入失败/);
+assert.equal($('path-error-details').hidden,false);
+assert.equal($('path-error-details').open,false);
+assert($('path-errors').textContent.length>5000);
+assert.match($('path-error-summary').textContent,/前 30/);
+ctx.clearPathErrors();assert.equal($('path-error-details').hidden,true);assert.equal($('path-errors').textContent,'');
+ctx.renderPathResult({count:2,annotated:2,shapes:2,skipped:0,errors:[]});assert.equal($('path-error-details').hidden,true);
+console.log('PASS: hundreds of failures become one short summary, raw errors stay collapsed, stale errors clear');

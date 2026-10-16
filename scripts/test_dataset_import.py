@@ -53,8 +53,8 @@ class DatasetImportTest(unittest.TestCase):
 
     def test_missing_class_table_and_invalid_coords_do_not_import_unlabeled(self):
         self.image('a.jpg'); self.text('a.txt', '0 0.5 0.5 0.2 0.2')
-        result = import_tree(self.src, self.project)
-        self.assertEqual((result['count'], result['skipped']), (0, 1))
+        with self.assertRaisesRegex(ValueError, '导入前检查未通过'):
+            import_tree(self.src, self.project)
         self.text('classes.txt', 'car')
         for value in ('nan', '1.2'):
             self.text('a.txt', f'0 {value} 0.5 0.2 0.2')
@@ -114,7 +114,7 @@ class DatasetImportTest(unittest.TestCase):
         docs = self.docs()
         self.assertEqual(len({d['imagePath'] for d in docs}), 24)
         self.assertEqual({d['shapes'][0]['label'] for d in docs}, {str(i) for i in range(24)})
-        self.assertEqual([r['processed'] for r in reports[2:]], list(range(1, 25)))
+        self.assertEqual([r['processed'] for r in reports if r['phase'] == 'importing' and r['processed'] > 0], list(range(1, 25)))
 
     def test_copy_failure_removes_partial_destination_and_keeps_other_images(self):
         self.image('bad.jpg'); self.image('good.jpg')
@@ -129,6 +129,31 @@ class DatasetImportTest(unittest.TestCase):
         self.assertEqual((result['count'], result['skipped']), (1, 1))
         self.assertFalse((Path(self.project['images'])/'bad.jpg').exists())
         self.assertTrue((Path(self.project['images'])/'good.jpg').exists())
+
+    def test_preflight_missing_classes_moves_nothing_and_stops_at_first_file(self):
+        for i in range(4):
+            self.image(f'images/{i}.jpg')
+            self.text(f'labels/{i}.txt', '0 .5 .5 .2 .2')
+        reports = []
+        with patch('dataset_import.shutil.copy2') as copier, patch.object(Path, 'replace') as mover:
+            with self.assertRaisesRegex(ValueError, '缺少 YOLO 类别表'):
+                import_tree(self.src, self.project, transfer='move', progress=lambda **kw: reports.append(kw))
+        copier.assert_not_called(); mover.assert_not_called()
+        self.assertEqual(len(list((self.src/'images').glob('*.jpg'))), 4)
+        self.assertEqual(list(Path(self.project['images']).iterdir()), [])
+        self.assertFalse((Path(self.project['images']).parent/'move-import.jsonl').exists())
+        self.assertEqual(reports[-1]['phase'], 'validating')
+        self.assertFalse(any(r['phase'] == 'importing' for r in reports))
+
+    def test_preflight_bad_class_in_later_file_blocks_the_entire_move(self):
+        self.image('images/a.jpg'); self.image('images/z.jpg')
+        self.text('labels/a.txt', '0 .5 .5 .2 .2')
+        self.text('labels/z.txt', '2 .5 .5 .2 .2')
+        self.text('classes.txt', 'car')
+        with self.assertRaisesRegex(ValueError, '类别编号 2'):
+            import_tree(self.src, self.project, transfer='move')
+        self.assertTrue((self.src/'images/a.jpg').exists())
+        self.assertEqual(list(Path(self.project['images']).iterdir()), [])
 
 
 if __name__ == '__main__':

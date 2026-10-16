@@ -184,7 +184,14 @@
   .dialog > header h3 { margin: 0; font-size: 16px; }
   .dialog > footer { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); }
   #pathbox .dialog { width: min(520px, 100%); }
-  #pathbox .body { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  #pathbox .dialog { overflow: hidden; }
+  #pathbox .dialog > header, #pathbox .dialog > footer { flex-shrink: 0; }
+  #pathbox .body { padding: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; }
+  #pathbox .body > * { flex-shrink: 0; }
+  #path-error-details { border: 1px solid var(--line2); border-radius: 6px; padding: 8px; }
+  #path-error-details[hidden] { display: none; }
+  #path-error-details summary { cursor: pointer; color: var(--link); }
+  #path-errors { max-height: 180px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; margin: 8px 0 0; }
   #rename-modal .dialog { width: min(440px, 100%); }
   #rename-modal .body { padding: 16px; display: grid; gap: 10px; }
   .inline-error { color: var(--red); font-size: 13px; white-space: pre-wrap; }
@@ -436,7 +443,7 @@
 
 <div class="modal" id="pathbox">
   <div class="dialog">
-    <header><h3 id="path-title">从服务器路径导入</h3></header>
+    <header><h3 id="path-title">从服务器路径导入</h3><span class="grow"></span><button type="button" id="path-close" aria-label="关闭服务器导入窗口">×</button></header>
     <div class="body">
       <span class="muted">导入图片及 Labelme / YOLO 标注。YOLO 请填数据集根目录，包含 images/、labels/ 和 data.yaml（或 classes.txt）。</span>
       <label>导入方式 <select id="path-mode"><option value="copy">复制导入（保留源图片）</option><option value="move">同盘移动（速度更快）</option></select></label>
@@ -448,6 +455,7 @@
         <p id="path-current" class="muted" style="overflow-wrap:anywhere"></p>
       </div>
       <div id="path-result" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></div>
+      <details id="path-error-details" hidden><summary id="path-error-summary">查看错误详情</summary><pre id="path-errors"></pre></details>
     </div>
     <footer><span class="grow"></span><button type="button" id="path-cancel">取消</button><button type="button" id="path-ok" class="primary">导入</button></footer>
   </div>
@@ -2527,9 +2535,15 @@ function updateImportTask(job, pid, name) {
   button.hidden = false;
   button.dataset.status = job.status || "running";
   let state;
-  if (job.status === "complete") state = "导入完成 · " + (job.result?.count ?? job.count ?? 0) + " 张";
+  if (job.status === "complete") {
+    const count = job.result?.count ?? job.count ?? 0;
+    const skipped = job.result?.skipped ?? job.skipped ?? 0;
+    state = count === 0 && skipped ? "导入失败 · " + skipped + " 项" : "导入完成 · " + count + " 张" + (skipped ? "，失败 " + skipped : "");
+    if (count === 0 && skipped) button.dataset.status = "failed";
+  }
   else if (job.status === "failed") state = "导入失败";
   else if (job.status === "disconnected") state = "导入进度连接中断";
+  else if (job.phase === "validating") state = "导入前检查 · 类别表…";
   else if (job.phase === "scanning") state = "导入中 · 扫描文件…";
   else {
     const percent = job.total ? Math.floor(job.processed / job.total * 100) : 0;
@@ -2589,9 +2603,9 @@ function pathImportControls(busy) {
 function renderPathProgress(job) {
   $("path-progress-box").hidden = false;
   const bar = $("path-progress");
-  if (job.phase === "scanning") {
+  if (["scanning", "validating"].includes(job.phase)) {
     bar.removeAttribute("value");
-    $("path-progress-text").textContent = "正在扫描数据集，统计图片数量…";
+    $("path-progress-text").textContent = job.phase === "validating" ? "导入前检查：正在核对 YOLO 类别表和编号，尚未移动图片…" : "正在扫描数据集，统计图片数量…";
   } else {
     const percent = job.total ? Math.floor(job.processed / job.total * 100) : 0;
     bar.value = job.status === "complete" ? 100 : percent;
@@ -2599,11 +2613,31 @@ function renderPathProgress(job) {
   }
   $("path-current").textContent = job.filename ? "当前文件：" + job.filename : "";
 }
+function renderPathResult(data) {
+  const errors = data.errors || [];
+  let text = data.count === 0 && data.skipped
+    ? "导入失败：成功 0 张，失败 " + data.skipped + " 项。"
+    : "导入完成：成功 " + data.count + " 张，其中 " + data.annotated + " 张有标注，共 " + data.shapes + " 个目标。" + (data.skipped ? "失败 " + data.skipped + " 项。" : "");
+  if (errors.length && errors.every(error => error.includes("缺少类别表或类别编号不存在"))) {
+    text += "\n原因：缺少 YOLO 类别表，或类别编号不匹配。请在数据集根目录补充正确的 data.yaml / classes.txt 后重试。";
+  }
+  $("path-result").textContent = text;
+  $("path-error-details").hidden = !errors.length;
+  $("path-error-details").open = false;
+  $("path-error-summary").textContent = "查看错误详情（" + (data.skipped > errors.length ? "前 " : "") + Math.min(30, errors.length) + " 项）";
+  $("path-errors").textContent = errors.slice(0, 30).join("\n\n");
+}
+function clearPathErrors() {
+  $("path-error-details").hidden = true;
+  $("path-error-details").open = false;
+  $("path-errors").textContent = "";
+}
 async function monitorPathImport(jobId, pid, name = projectName) {
   if (monitoredImportJob === jobId) return;
   monitoredImportJob = jobId;
   updateImportTask({id: jobId, status: "running", phase: "scanning"}, pid, name);
   pathImportControls(true);
+  clearPathErrors();
   $("path-result").textContent = "关闭窗口后任务仍会继续，再打开可查看进度。";
   let failures = 0;
   try {
@@ -2629,7 +2663,7 @@ async function monitorPathImport(jobId, pid, name = projectName) {
         store("path-import:" + pid, "");
         if (job.status === "failed") throw new Error(job.error || "导入失败");
         const data = job.result;
-        $("path-result").textContent = "导入完成：成功 " + data.count + " 张，其中 " + data.annotated + " 张有标注，共 " + data.shapes + " 个目标。" + (data.skipped ? "失败 " + data.skipped + " 项。\n" + (data.errors || []).join("\n") : "");
+        renderPathResult(data);
         if (projectId === pid) {
           await loadLabels();
           await reloadList();
@@ -2656,7 +2690,7 @@ function updatePathModeHelp() {
     : "复制图片及标注到当前项目，保留源数据。";
 }
 $("path-mode").onchange = updatePathModeHelp;
-$("path-cancel").onclick = () => $("pathbox").classList.remove("show");
+$("path-cancel").onclick = $("path-close").onclick = () => $("pathbox").classList.remove("show");
 $("server-path").addEventListener("keydown", event => { if (event.key === "Enter") $("path-ok").click(); });
 $("path-ok").onclick = async () => {
   const path = $("server-path").value.trim();
@@ -2664,6 +2698,7 @@ $("path-ok").onclick = async () => {
   const pid = projectId;
   const taskName = projectName;
   pathImportControls(true);
+  clearPathErrors();
   $("path-result").textContent = "正在创建导入任务…";
   renderPathProgress({phase: "scanning"});
   try {

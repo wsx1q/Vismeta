@@ -44,6 +44,41 @@ def sidecar(image, suffix, boundary):
     return next((p for p in candidates if p.is_file()), None)
 
 
+def image_class_names(image, boundary, cache):
+    for parent in image.parents:
+        if parent not in cache:
+            cache[parent] = class_names(parent)
+        if cache[parent] is not None:
+            return cache[parent]
+        if parent == boundary:
+            break
+    return None
+
+
+def preflight_classes(images, boundary, cache):
+    """Reject a broken class mapping before any image is copied or moved."""
+    for image in images:
+        if sidecar(image, '.json', boundary):
+            continue
+        txt = sidecar(image, '.txt', boundary)
+        if txt is None:
+            continue
+        names = image_class_names(image, boundary, cache)
+        for line_no, line in enumerate(txt.read_text(encoding='utf-8-sig').splitlines(), 1):
+            if not line.strip():
+                continue
+            if names is None:
+                raise ValueError('导入前检查未通过：缺少 YOLO 类别表。请在数据集根目录添加 data.yaml 或 classes.txt 后重试。'
+                                 f'首个发现文件：{txt.name}。本次尚未复制或移动图片。')
+            try:
+                cls = int(line.split()[0])
+            except ValueError as exc:
+                raise ValueError(f'导入前检查未通过：{txt.name} 第 {line_no} 行类别编号不是整数。本次尚未复制或移动图片。') from exc
+            if cls not in names or not names[cls].strip():
+                raise ValueError(f'导入前检查未通过：{txt.name} 第 {line_no} 行类别编号 {cls} 不在有效类别表内。'
+                                 '请修正 data.yaml / classes.txt。本次尚未复制或移动图片。')
+
+
 def yolo_shapes(path, width, height, names):
     shapes = []
     for line_no, line in enumerate(path.read_text(encoding='utf-8-sig').splitlines(), 1):
@@ -93,11 +128,14 @@ def import_tree(source, project, cap=20000, progress=None, transfer='copy'):
               and images_root != p.parent.resolve() and images_root not in p.resolve().parents]
     total = min(len(images), cap)
     processed = 0
+    cache = {}
+    if progress:
+        progress(phase='validating', processed=0, total=total, count=0, skipped=0, shapes=0)
+    preflight_classes(images[:cap], boundary, cache)
     if progress:
         progress(phase='importing', processed=0, total=total, count=0, skipped=0, shapes=0)
     added, errors, labels = [], [], set()
     annotated = objects = empty = 0
-    cache = {}
     cache_lock = threading.Lock()
     manifest_lock = threading.Lock()
     # Allocate names before dispatch so equal stems across splits cannot race.
@@ -131,17 +169,8 @@ def import_tree(source, project, cap=20000, progress=None, transfer='copy'):
                         raise ValueError('标签或坐标无效')
                 doc.pop('imageData', None)
             else:
-                names = None
-                for parent in image.parents:
-                    with cache_lock:
-                        if parent not in cache:
-                            cache[parent] = class_names(parent)
-                        parent_names = cache[parent]
-                    if parent_names is not None:
-                        names = parent_names
-                        break
-                    if parent == boundary:
-                        break
+                with cache_lock:
+                    names = image_class_names(image, boundary, cache)
                 doc = {'shapes': yolo_shapes(txt, width, height, names), 'flags': {}}
             doc.update(version='2.4.0', imageData=None, imageWidth=width, imageHeight=height)
         # Exclusive creation also protects against another uploader writing this name.
