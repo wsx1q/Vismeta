@@ -555,6 +555,47 @@ def image_file(name):
     return response
 
 
+def image_mutation_project():
+    project = current_project()
+    with IMPORT_JOBS_LOCK:
+        if any(j['project_id'] == project['id'] and j['status'] == 'running' for j in IMPORT_JOBS.values()):
+            abort(409, '正在导入，请完成后再删除或恢复图片')
+    import project_backups
+    if project_backups.status(DATA_ROOT, project['id'])['status'] in {'queued', 'running'}:
+        abort(409, '正在备份，请完成后再删除或恢复图片')
+    import texts
+    job = texts.job_state()
+    if job.get('running') and job.get('project') == project['id']:
+        abort(409, '正在批量生成，请完成后再删除或恢复图片')
+    return project
+
+
+@app.post('/api/images/delete')
+def delete_images():
+    import image_trash
+    project = image_mutation_project()
+    try:
+        return jsonify(image_trash.remove(project, (request.get_json(force=True) or {}).get('names')))
+    except (ValueError, OSError) as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
+@app.get('/api/images/trash')
+def image_trash_list():
+    import image_trash
+    return jsonify({'batches': image_trash.list_batches(current_project())})
+
+
+@app.post('/api/images/restore')
+def restore_images():
+    import image_trash
+    project = image_mutation_project()
+    try:
+        return jsonify(image_trash.restore(project, (request.get_json(force=True) or {}).get('batch')))
+    except (ValueError, OSError) as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
 def labels_path():
     return Path(current_project()["labels"])
 

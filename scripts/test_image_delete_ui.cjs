@@ -1,0 +1,13 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const script=fs.readFileSync('static/index.html','utf8').match(/<script>\s*([\s\S]*?)<\/script>/)[1];new vm.Script(script);
+const element=tag=>({tag,children:[],attrs:{},append(...nodes){this.children.push(...nodes);},appendChild(node){this.children.push(node);},setAttribute(k,v){this.attrs[k]=v;}});
+let opened=[],deleted=[],updated=0;
+const ctx=vm.createContext({document:{createElement:element},index:0,imageSelectionMode:true,imageMutationBusy:false,selectedImages:new Set(),textBadge:()=>element('badge'),updateImageActions(){updated++;},openAt:i=>opened.push(i),deleteProjectImages:n=>deleted.push(n)});
+vm.runInContext(script.slice(script.indexOf('function listRow(item, i) {'),script.indexOf('async function loadList')),ctx);
+const row=ctx.listRow({name:'a.jpg',saved:true,text:'none'},0);
+const check=row.children[0];check.checked=true;check.onchange();assert(ctx.selectedImages.has('a.jpg'));assert.equal(opened.length,0);
+row.children.at(-1).onclick({stopPropagation(){}});assert.equal(deleted[0][0],'a.jpg');assert.equal(opened.length,0);
+ctx.imageMutationBusy=true;row.onclick();assert.equal(opened.length,0);
+ctx.imageMutationBusy=false;row.onclick();assert.equal(opened[0],0);
+assert(updated>0);
+console.log('PASS: selecting or deleting a row does not open it; filename is preserved; active mutation blocks navigation');

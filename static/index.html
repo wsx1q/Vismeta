@@ -66,6 +66,17 @@
   #gen-bar { height: 3px; background: var(--line); }
   #gen-bar span { display: block; height: 100%; width: 0; background: var(--blue); transition: width .3s; }
   #list { overflow: auto; flex: 1; }
+  #image-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  #image-actions [hidden] { display: none; }
+  .image-delete { background: transparent; border: 0; color: var(--red); padding: 0 4px; visibility: hidden; }
+  .item:hover .image-delete, .item:focus-within .image-delete { visibility: visible; }
+  .image-select { flex-shrink: 0; margin: 0; }
+  #trashbox .dialog { width: min(660px, 100%); overflow: hidden; }
+  #trashbox header, #trashbox footer { flex-shrink: 0; }
+  #trash-list { overflow: auto; min-height: 0; padding: 16px; }
+  .trash-row { border-bottom: 1px solid var(--line); padding: 10px 0; overflow-wrap: anywhere; }
+  .trash-row button { margin-top: 8px; }
+  @media (pointer: coarse) { .image-delete { visibility: visible; } }
   .item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #1d222a; }
   .item:hover { background: #1a2029; }
   .item.active { background: var(--hover); }
@@ -292,6 +303,12 @@
       <button type="button" class="sm" id="gen-all" title="用勾选了「参与批量生成」的提示词，给还没有文字或被打回的图片在后台生成">批量生成</button>
     </div>
     <div id="gen-bar"><span></span></div>
+    <div id="image-actions">
+      <button type="button" class="sm" id="image-select-toggle">批量选择</button>
+      <button type="button" class="sm" id="image-select-all" hidden>全选当前结果</button>
+      <button type="button" class="sm" id="image-delete-selected" hidden disabled>删除所选（0）</button>
+      <span class="grow"></span><button type="button" class="sm" id="image-trash">回收站</button>
+    </div>
     <div id="list"></div>
     <div id="meta"></div>
   </aside>
@@ -469,6 +486,13 @@
   </div>
 </div>
 
+<div class="modal" id="trashbox" role="dialog" aria-modal="true" aria-labelledby="trash-title">
+  <div class="dialog">
+    <header><h3 id="trash-title">项目图片回收站</h3><span class="grow"></span><button type="button" id="trash-close" aria-label="关闭图片回收站">×</button></header>
+    <div id="trash-list"></div><footer><span class="muted">图片和标注一起恢复；同名文件不会被覆盖。</span></footer>
+  </div>
+</div>
+
 <div class="modal" id="vlm-modal">
   <div class="dialog">
     <header><h3>大模型设置</h3><span class="muted" style="font-size:12px">接口对所有项目共用；提示词只属于当前项目</span><span class="grow"></span><button type="button" class="ghost" id="vlm-close">✕</button></header>
@@ -572,6 +596,9 @@ const centerEl = $("center");
 const labelNamesEl = $("label-names");
 const shapeListEl = $("shape-list");
 let items = [];
+let selectedImages = new Set();
+let imageSelectionMode = false;
+let imageMutationBusy = false;
 let index = -1;
 let listStats = null;
 let points = [];
@@ -1083,14 +1110,35 @@ function listRow(item, i) {
   const nm = document.createElement("span");
   nm.className = "nm";
   nm.textContent = item.name;
+  if (imageSelectionMode) {
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox"; checkbox.className = "image-select";
+    checkbox.checked = selectedImages.has(item.name);
+    checkbox.setAttribute("aria-label", "选择图片 " + item.name);
+    checkbox.onclick = event => event.stopPropagation();
+    checkbox.onchange = () => {
+      if (checkbox.checked) selectedImages.add(item.name); else selectedImages.delete(item.name);
+      updateImageActions();
+    };
+    div.appendChild(checkbox);
+  }
   div.append(dot, nm, textBadge(item.text));
-  div.onclick = () => openAt(i);
+  const remove = document.createElement("button");
+  remove.type = "button"; remove.className = "image-delete"; remove.textContent = "×";
+  remove.title = "删除图片（移入回收站）";
+  remove.setAttribute("aria-label", "删除图片 " + item.name);
+  remove.onclick = event => { event.stopPropagation(); deleteProjectImages([item.name]); };
+  div.appendChild(remove);
+  div.onclick = () => { if (!imageMutationBusy) openAt(i); };
   return div;
 }
 async function loadList(focus) {
   const params = new URLSearchParams({limit: "50000", q: $("q").value.trim(), t: $("tfilter").value, s: $("sfilter").value});
   const data = await (await fetch("/api/images?" + params)).json();
   items = data.items || [];
+  const listed = new Set(items.map(item => item.name));
+  selectedImages = new Set([...selectedImages].filter(name => listed.has(name)));
+  updateImageActions();
   listStats = {total: data.total, done: data.done, texts: data.texts || {}};
   index = focus ? items.findIndex(item => item.name === focus) : -1;
   paintMeta();
@@ -1099,6 +1147,97 @@ async function loadList(focus) {
   listEl.innerHTML = "";
   listEl.appendChild(frag);
   if (!items.length) listEl.innerHTML = '<div class="empty">没有符合条件的图片</div>';
+}
+function updateImageActions() {
+  $("image-select-toggle").textContent = imageSelectionMode ? "退出选择" : "批量选择";
+  $("image-select-all").hidden = !imageSelectionMode;
+  $("image-delete-selected").hidden = !imageSelectionMode;
+  $("image-delete-selected").textContent = "删除所选（" + selectedImages.size + "）";
+  $("image-delete-selected").disabled = !selectedImages.size || imageMutationBusy;
+  for (const id of ["image-select-toggle", "image-select-all", "image-trash", "prev", "next"]) $(id).disabled = imageMutationBusy;
+}
+function repaintImageRows() {
+  const fragment = document.createDocumentFragment();
+  items.forEach((item, i) => fragment.appendChild(listRow(item, i)));
+  listEl.replaceChildren(fragment);
+  updateImageActions();
+}
+$("image-select-toggle").onclick = () => {
+  imageSelectionMode = !imageSelectionMode;
+  if (!imageSelectionMode) selectedImages.clear();
+  repaintImageRows();
+};
+$("image-select-all").onclick = () => {
+  if (selectedImages.size === items.length) selectedImages.clear();
+  else selectedImages = new Set(items.map(item => item.name));
+  repaintImageRows();
+};
+$("image-delete-selected").onclick = () => deleteProjectImages([...selectedImages]);
+async function imageTrashRequest(url, body) {
+  const res = await postJSON(url, body);
+  if (res.status === 409) throw new Error("当前项目正在导入、备份或批量生成，请完成后再试。");
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "图片操作失败");
+  return data;
+}
+async function deleteProjectImages(names) {
+  if (imageMutationBusy || busy || !names.length) return;
+  if (!confirm("将所选 " + names.length + " 张图片及对应标注移入当前项目回收站？可以在回收站恢复。")) return;
+  const pid = projectId;
+  const currentName = items[index]?.name || "";
+  const deleting = new Set(names);
+  const removingCurrent = deleting.has(currentName);
+  if (removingCurrent && !(await leaveCurrent())) return;
+  if (projectId !== pid) return;
+  const remaining = items.filter(item => !deleting.has(item.name));
+  const next = remaining[Math.min(Math.max(0, index), remaining.length - 1)]?.name || "";
+  imageMutationBusy = true; updateImageActions();
+  try {
+    const data = await imageTrashRequest("/api/images/delete", {names});
+    if (removingCurrent) wipeView();
+    names.forEach(name => selectedImages.delete(name));
+    await loadList(removingCurrent ? next : currentName);
+    if (removingCurrent && index >= 0) await openAt(index);
+    if (!items.length) { wipeView(); $("empty-project").hidden = false; }
+    setStatus("已删除 " + data.count + " 张图片及对应标注，可在回收站恢复");
+  } catch (err) { toastCenter(err.message, "err"); }
+  finally { imageMutationBusy = false; updateImageActions(); }
+}
+$("trash-close").onclick = () => $("trashbox").classList.remove("show");
+$("image-trash").onclick = async () => {
+  if (!projectId) return;
+  $("trashbox").classList.add("show");
+  await loadImageTrash();
+};
+async function loadImageTrash() {
+  const box = $("trash-list"); box.textContent = "正在读取回收站…";
+  try {
+    const res = await fetch("/api/images/trash"); const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "读取失败");
+    box.textContent = "";
+    if (!data.batches.length) { box.textContent = "回收站为空"; return; }
+    for (const batch of data.batches) {
+      const row = document.createElement("div"); row.className = "trash-row";
+      const text = document.createElement("div");
+      text.textContent = new Date(batch.created * 1000).toLocaleString() + " · " + batch.count + " 张\n" + batch.names.join("、") + (batch.count > batch.names.length ? "…" : "");
+      row.appendChild(text);
+      const button = rowButton("恢复这批图片", async () => {
+        if (imageMutationBusy || busy) return;
+        imageMutationBusy = true; button.disabled = true;
+        try {
+          const result = await imageTrashRequest("/api/images/restore", {batch: batch.id});
+          const keep = items[index]?.name || "";
+          await loadList(keep);
+          if (index < 0 && items.length) await openAt(0);
+          $("empty-project").hidden = !!items.length;
+          await loadImageTrash();
+          setStatus("已恢复 " + result.count + " 张图片及标注");
+        } catch (err) { const error = document.createElement("p"); error.className = "inline-error"; error.textContent = err.message; row.appendChild(error); button.disabled = false; }
+        finally { imageMutationBusy = false; updateImageActions(); }
+      });
+      row.appendChild(button); box.appendChild(row);
+    }
+  } catch (err) { box.textContent = err.message; }
 }
 function markRow(i) {
   if (!items[i] || !listEl.children[i]) return;
@@ -2137,8 +2276,9 @@ $("add-label").onclick = () => {
 $("new-label").addEventListener("keydown", event => { if (event.key === "Enter") $("add-label").click(); });
 
 window.addEventListener("keydown", event => {
+  if (imageMutationBusy) return;
   if (document.querySelector(".modal.show") || $("projects").classList.contains("show")) {
-    if (event.key === "Escape") { closeVlm(); closeImport(); $("rename-cancel").click(); $("pathbox").classList.remove("show"); }
+    if (event.key === "Escape") { closeVlm(); closeImport(); $("rename-cancel").click(); $("pathbox").classList.remove("show"); $("trashbox").classList.remove("show"); }
     return;
   }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
@@ -2225,6 +2365,7 @@ function wipeView() {
   setTexts(null);
 }
 async function showProjects() {
+  if (imageMutationBusy) return;
   if (!(await leaveCurrent())) return;
   if (projectId && index >= 0 && items[index]) store("label-place:" + projectId, items[index].name);
   wipeView();
@@ -2256,6 +2397,8 @@ async function loadProjects() {
   }
 }
 async function enterProject(id, name) {
+  if (imageMutationBusy) { setStatus("正在处理图片，请稍候"); return; }
+  selectedImages.clear(); imageSelectionMode = false; updateImageActions();
   projectId = id;
   projectName = name;
   $("proj-name").textContent = name;
