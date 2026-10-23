@@ -11,6 +11,15 @@ import server
 
 
 class ProjectImportTest(unittest.TestCase):
+    def test_project_entries_do_not_wait_for_annotation_statistics(self):
+        with patch.object(server, 'project_stats', side_effect=AssertionError('must not scan annotations')):
+            response = self.client.get('/api/projects?summary=0')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['projects'], [
+            {'id': self.pid, 'name': 'original', 'builtin': False}])
+        with patch.object(server, 'project_stats', return_value={'images': 2, 'annotated': 1, 'shapes': 3}):
+            self.assertEqual(self.client.get('/api/projects').get_json()['projects'][0]['images'], 2)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

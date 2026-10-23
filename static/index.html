@@ -2372,28 +2372,65 @@ async function showProjects() {
   $("projects").classList.add("show");
   loadProjects();
 }
+let projectListSeq = 0;
+async function projectListRequest(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(url, {signal: controller.signal});
+    if (!response.ok) throw new Error("服务器返回 " + response.status);
+    return await response.json();
+  } finally { clearTimeout(timer); }
+}
 async function loadProjects() {
-  const data = await (await fetch("/api/projects")).json();
-  restorePathImport(data.projects || []);
+  const ticket = ++projectListSeq;
   const box = $("project-list");
+  box.textContent = "正在加载项目…";
+  let data;
+  try { data = await projectListRequest("/api/projects?summary=0"); }
+  catch (err) {
+    if (ticket !== projectListSeq) return;
+    box.textContent = "项目加载失败，请检查服务器连接。";
+    box.appendChild(rowButton("重试", loadProjects));
+    return;
+  }
+  if (ticket !== projectListSeq) return;
+  restorePathImport(data.projects || []);
   box.innerHTML = "";
   if (!(data.projects || []).length) {
     box.innerHTML = "<div class='empty'>还没有项目。在右上角填名称后点新建。</div>";
     return;
   }
+  const cards = new Map();
+  function paintStats(card, item) {
+    const ratio = item.images ? Math.round(item.annotated / item.images * 100) : 0;
+    card.querySelector(".stat").textContent = "图片 " + item.images + " · 已标注 " + item.annotated + " · 目标 " + item.shapes + (item.images ? "（" + ratio + "%）" : "");
+    card.querySelector(".bar span").style.width = ratio + "%";
+  }
   for (const item of data.projects) {
     const card = document.createElement("div");
     card.className = "project";
-    const ratio = item.images ? Math.round(item.annotated / item.images * 100) : 0;
     card.innerHTML = "<b></b><div class='stat'></div><div class='bar'><span></span></div><div class='actions'></div>";
     card.querySelector("b").textContent = item.name;
-    card.querySelector(".stat").textContent = "图片 " + item.images + " · 已标注 " + item.annotated + " · 目标 " + item.shapes + (item.images ? "（" + ratio + "%）" : "");
-    card.querySelector(".bar span").style.width = ratio + "%";
+    card.querySelector(".stat").textContent = "正在统计图片和标注…";
     const actions = card.querySelector(".actions");
     actions.appendChild(rowButton("进入", () => enterProject(item.id, item.name), {className: "primary"}));
     actions.appendChild(rowButton("改名", () => editProjectName(item)));
     if (!item.builtin) actions.appendChild(rowButton("删除", () => removeProject(item)));
     box.appendChild(card);
+    cards.set(item.id, card);
+  }
+  try {
+    const stats = await projectListRequest("/api/projects");
+    if (ticket !== projectListSeq) return;
+    for (const item of stats.projects || []) {
+      const card = cards.get(item.id);
+      if (card) paintStats(card, item);
+    }
+  } catch (err) {
+    if (ticket !== projectListSeq) return;
+    for (const card of cards.values()) card.querySelector(".stat").textContent = "统计暂时不可用，可直接进入项目";
+    box.appendChild(rowButton("重试统计", loadProjects));
   }
 }
 async function enterProject(id, name) {

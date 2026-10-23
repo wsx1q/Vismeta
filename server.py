@@ -1083,7 +1083,7 @@ def texts_stop():
 def list_projects():
     rows = []
     for item in load_projects():
-        stats = project_stats(item)
+        stats = project_stats(item) if request.args.get("summary") != "0" else {}
         rows.append({
             "id": item["id"],
             "name": item["name"],
