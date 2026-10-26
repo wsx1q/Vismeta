@@ -53,6 +53,11 @@ def reclaim_inference_memory(response):
     # View frames and their large image arrays have been released at this point.
     if request.endpoint == "segment":
         trim_cpu_memory()
+    if response.status_code < 400 and request.endpoint in {
+        'save', 'delete_images', 'restore_images', 'create_project', 'delete_project', 'import_files'
+    }:
+        import project_stats_cache
+        project_stats_cache.invalidate(DATA_ROOT)
     return response
 
 
@@ -1081,8 +1086,16 @@ def texts_stop():
 
 @app.get("/api/projects")
 def list_projects():
+    projects = load_projects()
+    if request.args.get('summary') == 'cached':
+        import project_stats_cache
+        counts, refreshing = project_stats_cache.cache(DATA_ROOT).snapshot(projects, project_stats)
+        return jsonify({'projects': [
+            {'id': p['id'], 'name': p['name'], 'builtin': bool(p.get('builtin')),
+             **counts.get(p['id'], {}), 'stats_pending': p['id'] not in counts}
+            for p in projects], 'refreshing': refreshing})
     rows = []
-    for item in load_projects():
+    for item in projects:
         stats = project_stats(item) if request.args.get("summary") != "0" else {}
         rows.append({
             "id": item["id"],
@@ -1212,6 +1225,9 @@ def start_path_import(src, project, mode='copy'):
             update(status='complete', phase='complete', result=result)
         except Exception as exc:
             update(status='failed', phase='failed', error=str(exc))
+        finally:
+            import project_stats_cache
+            project_stats_cache.invalidate(DATA_ROOT)
     threading.Thread(target=worker, daemon=True, name='dataset-import-' + job_id[:8]).start()
     return jsonify(snapshot), 202
 

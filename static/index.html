@@ -2420,21 +2420,30 @@ async function loadProjects() {
     box.appendChild(card);
     cards.set(item.id, card);
   }
-  try {
-    const stats = await projectListRequest("/api/projects");
+  async function refreshStats() {
     if (ticket !== projectListSeq) return;
-    for (const item of stats.projects || []) {
-      const card = cards.get(item.id);
-      if (card) paintStats(card, item);
+    try {
+      const stats = await projectListRequest("/api/projects?summary=cached");
+      if (ticket !== projectListSeq) return;
+      for (const item of stats.projects || []) {
+        const card = cards.get(item.id);
+        if (card && !item.stats_pending) { paintStats(card, item); card.dataset.hasStats = "1"; }
+      }
+      if (stats.refreshing) setTimeout(refreshStats, 2000);
+      else if ((stats.projects || []).some(item => item.stats_pending)) throw new Error("统计未完成");
+    } catch (err) {
+      if (ticket !== projectListSeq) return;
+      for (const card of cards.values()) {
+        if (!card.dataset.hasStats) card.querySelector(".stat").textContent = "统计暂时不可用，可直接进入项目";
+      }
+      box.appendChild(rowButton("重试统计", loadProjects));
     }
-  } catch (err) {
-    if (ticket !== projectListSeq) return;
-    for (const card of cards.values()) card.querySelector(".stat").textContent = "统计暂时不可用，可直接进入项目";
-    box.appendChild(rowButton("重试统计", loadProjects));
   }
+  await refreshStats();
 }
 async function enterProject(id, name) {
   if (imageMutationBusy) { setStatus("正在处理图片，请稍候"); return; }
+  projectListSeq += 1;
   selectedImages.clear(); imageSelectionMode = false; updateImageActions();
   projectId = id;
   projectName = name;

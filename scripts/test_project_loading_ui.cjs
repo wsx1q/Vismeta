@@ -3,7 +3,7 @@ const script = fs.readFileSync('static/index.html', 'utf8').match(/<script>\s*([
 new vm.Script(script);
 function element() {
   const children = [], slots = new Map();
-  return {children, style: {}, textContent: '', innerHTML: '',
+  return {children, style: {}, dataset: {}, textContent: '', innerHTML: '',
     appendChild(node) { children.push(node); },
     querySelector(selector) { if (!slots.has(selector)) slots.set(selector, element()); return slots.get(selector); }};
 }
