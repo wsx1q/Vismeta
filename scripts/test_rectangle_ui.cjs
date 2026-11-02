@@ -1,0 +1,11 @@
+const fs=require('node:fs'), vm=require('node:vm'), assert=require('node:assert/strict');
+const script=fs.readFileSync('static/index.html','utf8').match(/<script>\s*([\s\S]*?)<\/script>/)[1];
+const ctx=vm.createContext({shapeSeq:0});
+vm.runInContext(script.slice(script.indexOf('function hydrate(shapes)'),script.indexOf('function shapesKey()')),ctx);
+const four={shape_type:'rectangle',label:'cone',flags:{locked:true},points:[[10,20],[30,20],[30,70],[10,70]]};
+const rect=ctx.hydrate([four])[0];
+assert.deepEqual(JSON.parse(JSON.stringify(rect.points)),[[10,20],[30,70]]);
+assert.equal(rect.locked,true);assert.equal(four.points.length,4);
+const polygon={shape_type:'polygon',points:four.points};
+assert.equal(ctx.hydrate([polygon])[0].points,polygon.points);
+console.log('PASS: four-corner rectangle keeps its full width and height; polygon and source points are unchanged');

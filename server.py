@@ -21,6 +21,7 @@ from flask import Flask, abort, jsonify, request, send_file
 from PIL import Image
 
 import config
+from annotation_utils import normalize_rectangles, rectangle_points
 from memory_utils import trim_cpu_memory
 
 DATA_ROOT = config.DATA_ROOT
@@ -105,6 +106,7 @@ def read_doc(path):
         if isinstance(doc, dict) and ("shapes" in doc or "imageData" in doc):
             # Images are separate files. Never send, re-save, or export embedded pixels.
             doc["imageData"] = None
+            normalize_rectangles(doc)
         return doc
     except Exception:
         return None
@@ -723,7 +725,7 @@ def save():
         if kind == "rectangle" and len(points) >= 2:
             shapes.append({
                 "label": shape.get("label") or "目标",
-                "points": [[float(points[0][0]), float(points[0][1])], [float(points[1][0]), float(points[1][1])]],
+                "points": rectangle_points(points),
                 "group_id": None,
                 "shape_type": "rectangle",
                 "flags": flags,

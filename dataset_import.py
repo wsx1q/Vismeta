@@ -9,6 +9,7 @@ from pathlib import Path
 
 import yaml
 from PIL import Image
+from annotation_utils import normalize_rectangles
 
 EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
 
@@ -167,6 +168,7 @@ def import_tree(source, project, cap=20000, progress=None, transfer='copy'):
                         raise ValueError(f'不支持的标注形状：{kind}')
                     if not str(shape.get('label', '')).strip() or not all(len(p) == 2 and all(math.isfinite(float(v)) for v in p) for p in points):
                         raise ValueError('标签或坐标无效')
+                normalize_rectangles(doc)
                 doc.pop('imageData', None)
             else:
                 with cache_lock:
