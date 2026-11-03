@@ -11,6 +11,18 @@ import server
 
 
 class ProjectImportTest(unittest.TestCase):
+    def test_new_project_has_training_hazard_prompt_and_preserves_custom_settings(self):
+        response = self.client.get('/api/vlm/config', headers={'X-Project': self.pid})
+        prompts = response.get_json()['project']['prompts']
+        hazard = next(p for p in prompts if p['id'] == 'specific_hazard_qa')
+        self.assertEqual(hazard['question'], '请对这张施工现场隐患照片做安全检查记录，包括隐患类别、隐患描述和整改建议。')
+        self.assertEqual(hazard['format'], 'text')
+        self.assertEqual(hazard['system'], '')
+        self.assertEqual(hazard['max_tokens'], 256)
+        self.assertFalse(hazard['batch'])
+        import texts
+        self.assertEqual(texts.project_settings({'vlm': {'prompts': []}})['prompts'], [])
+
     def test_project_entries_do_not_wait_for_annotation_statistics(self):
         with patch.object(server, 'project_stats', side_effect=AssertionError('must not scan annotations')):
             response = self.client.get('/api/projects?summary=0')

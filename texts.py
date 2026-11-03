@@ -36,6 +36,17 @@ DEFAULT_PROMPTS = [
         "batch": True,
         "max_tokens": 0,
     },
+    {
+        "id": "specific_hazard_qa",
+        "name": "具体隐患问答",
+        "kind": "hazard",
+        "system": "",
+        "question": "请对这张施工现场隐患照片做安全检查记录，包括隐患类别、隐患描述和整改建议。",
+        "format": "text",
+        "coords": "qwen1000",
+        "batch": False,
+        "max_tokens": 256,
+    },
 ]
 
 JOB = {

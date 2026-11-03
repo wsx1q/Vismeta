@@ -2943,6 +2943,8 @@ async function openBackupStatus() {
 const PROMPT_TEMPLATES = [
   {name: "空白", kind: "qa", format: "text", question: "", batch: false},
   {name: "隐患类别（LoRA 训练问题）", kind: "category", format: "text", question: "请判断图中隐患的类别。", batch: true},
+  {name: "具体隐患问答", kind: "hazard", format: "text", max_tokens: 256, batch: false,
+    question: "请对这张施工现场隐患照片做安全检查记录，包括隐患类别、隐患描述和整改建议。"},
   {name: "图片描述", kind: "caption", format: "text", question: "请用一两句话客观描述这张图片的内容。", batch: false},
   {name: "生成问答对", kind: "qa", format: "json", batch: false,
     question: "请根据图片内容生成 3 条中文问答，用 JSON 数组输出，每条形如 {\"question\": \"…\", \"answer\": \"…\"}，只输出 JSON。"},
