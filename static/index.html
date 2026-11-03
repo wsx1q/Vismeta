@@ -304,7 +304,8 @@
     </div>
     <div id="gen-bar"><span></span></div>
     <div id="image-actions">
-      <button type="button" class="sm" id="image-select-toggle">批量选择</button>
+      <button type="button" class="sm" id="image-delete-current" title="将当前图片及对应标注移入回收站" disabled>删除当前图</button>
+      <button type="button" class="sm" id="image-select-toggle">批量删除</button>
       <button type="button" class="sm" id="image-select-all" hidden>全选当前结果</button>
       <button type="button" class="sm" id="image-delete-selected" hidden disabled>删除所选（0）</button>
       <span class="grow"></span><button type="button" class="sm" id="image-trash">回收站</button>
@@ -1152,7 +1153,8 @@ async function loadList(focus) {
   if (!items.length) listEl.innerHTML = '<div class="empty">没有符合条件的图片</div>';
 }
 function updateImageActions() {
-  $("image-select-toggle").textContent = imageSelectionMode ? "退出选择" : "批量选择";
+  $("image-select-toggle").textContent = imageSelectionMode ? "退出选择" : "批量删除";
+  $("image-delete-current").disabled = imageMutationBusy || index < 0 || !items[index];
   $("image-select-all").hidden = !imageSelectionMode;
   $("image-delete-selected").hidden = !imageSelectionMode;
   $("image-delete-selected").textContent = "删除所选（" + selectedImages.size + "）";
@@ -1176,6 +1178,10 @@ $("image-select-all").onclick = () => {
   repaintImageRows();
 };
 $("image-delete-selected").onclick = () => deleteProjectImages([...selectedImages]);
+$("image-delete-current").onclick = () => {
+  const item = items[index];
+  if (item) deleteProjectImages([item.name]);
+};
 async function imageTrashRequest(url, body) {
   const res = await postJSON(url, body);
   if (res.status === 409) throw new Error("当前项目正在导入、备份或批量生成，请完成后再试。");
@@ -1185,7 +1191,8 @@ async function imageTrashRequest(url, body) {
 }
 async function deleteProjectImages(names) {
   if (imageMutationBusy || busy || !names.length) return;
-  if (!confirm("将所选 " + names.length + " 张图片及对应标注移入当前项目回收站？可以在回收站恢复。")) return;
+  const description = names.length === 1 ? "图片「" + names[0] + "」" : "所选 " + names.length + " 张图片";
+  if (!confirm("将" + description + "及对应标注移入当前项目回收站？可以在回收站恢复。")) return;
   const pid = projectId;
   const currentName = items[index]?.name || "";
   const deleting = new Set(names);
@@ -1572,6 +1579,7 @@ async function openAt(i) {
   const ticket = ++imageLoadSeq;
   const imageProject = projectId;
   index = i;
+  updateImageActions();
   $("empty-project").hidden = true;
   $("stage").hidden = true;
   points = [];
@@ -2341,6 +2349,7 @@ window.addEventListener("keydown", event => {
 function wipeView() {
   ++imageLoadSeq;
   index = -1;
+  updateImageActions();
   $("stage").hidden = true;
   $("empty-project").hidden = true;
   photo.style.width = "";

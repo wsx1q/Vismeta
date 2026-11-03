@@ -13,7 +13,7 @@ const sandbox = {console, clearTimeout, $:el,
   stageWrap:{scrollLeft:30,scrollTop:20},overlay:{width:310,height:760},
   imageLoadSeq:0,index:0,projectId:'old',items:[{name:'old.jpg'}],busy:false,
   points:[],saved:[],listEl:{children:[]},promptTimer:null,
-  draw(){},renderShapes(){},setTexts(){},hydrate:x=>x,shapesKey:()=> '[]',ensureLabel:()=>false,persistLabels(){},
+  draw(){},renderShapes(){},setTexts(){},hydrate:x=>x,shapesKey:()=> '[]',ensureLabel:()=>false,persistLabels(){},updateImageActions(){},
   toastCenter(t){sandbox.toast=t;},setStatus(t){sandbox.status=t;},leaveCurrent:async()=>true,
   fetch:()=>new Promise(resolve=>{annotationResolve=resolve;}),
 };
