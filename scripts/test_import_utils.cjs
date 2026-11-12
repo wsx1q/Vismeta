@@ -14,6 +14,17 @@ const entry = (name) => ({name, isFile: true, file: resolve => resolve(file(name
   assert(plan.batches.every(batch => batch.includes(config)));
   assert(plan.batches[1].some(f => f.importPath === 'dataset/labels/train/204.txt'));
   assert(!plan.batches[1].some(f => f.name === '0.txt'));
+  const result = ImportFiles.plan([
+    ...files, ...labels, config,
+    file('results.png', 'dataset/results.png'),
+    file('preview.jpg', 'dataset/runs/images/preview.jpg'),
+    file('empty.jpg', 'dataset/images/val/empty.jpg'),
+    file('b.jpg', 'other/images/b.jpg'), file('b.json', 'other/images/b.json'),
+    file('classes.txt', 'other/classes.txt'), file('extra.jpg', 'other/extra.jpg'),
+  ]);
+  assert.equal(result.skippedYolo, 2);
+  assert.equal(result.media.length, 208);
+  assert(result.batches.every(batch => !batch.some(f => ['results.png', 'preview.jpg'].includes(f.name))));
   const mixed = ImportFiles.plan([file('a.jpg'), file('dataset.zip'), file('classes.txt'), file('b.jpg')]);
   assert.equal(mixed.batches.length, 3);
   assert(mixed.batches.every(batch => batch.some(f => f.name === 'classes.txt')));

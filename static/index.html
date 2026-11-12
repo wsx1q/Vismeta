@@ -568,7 +568,7 @@
   </div>
 </div>
 
-<script src="/static/import-utils.js"></script>
+<script src="/static/import-utils.js?v=20261112"></script>
 <script>
 let projectId = "";
 let projectName = "";
@@ -2582,7 +2582,8 @@ function renderImportSelection() {
   $("import-summary").textContent = images + " 张图片 · " + annotations + " 份标注 · " + archives + " 个压缩包 · " + (bytes / 1024 / 1024).toFixed(1) + " MB";
   $("import-file-list").textContent = importSelection.slice(0, 6).map(ImportFiles.path).join("\n") + (importSelection.length > 6 ? "\n…另有 " + (importSelection.length - 6) + " 个文件" : "");
   $("import-warning").textContent = missingClasses ? "已检测到 YOLO TXT，但缺少类别表。请补选 data.yaml / classes.txt，或在上方按编号填写类别。"
-    : plan.ignored ? "将忽略 " + plan.ignored + " 个不支持的文件。" : "";
+    : [plan.skippedYolo ? "YOLO 只导入 images 目录，已跳过 " + plan.skippedYolo + " 张目录外图片。" : "",
+       plan.ignored ? "将忽略 " + plan.ignored + " 个不支持的文件。" : ""].filter(Boolean).join(" ");
   $("import-start").disabled = importBusy || importReading || !plan.media.length || missingClasses;
 }
 function stageImportFiles(files) {

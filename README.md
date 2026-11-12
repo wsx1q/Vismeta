@@ -199,6 +199,8 @@ sam3.patch           SAM3 推理补丁（bfloat16 修正、显存释放）
 
 选择数据集文件夹或 zip / tar 压缩包，会连同已有标注一起导入。YOLO 支持检测框和分割多边形，自动转换为当前项目使用的 Labelme JSON。目录应包含 `images/train`、`labels/train`（以及可选的 val/test），根目录提供 `data.yaml` / `dataset.yaml` 的 `names` 列表或字典，或 `classes.txt`（每行一个类别）。同目录的图片和 TXT 也支持。缺少类别表、非法坐标或不支持的形状会报告失败，不会悄悄丢掉标注；空 TXT 作为负样本导入。
 
+识别到 YOLO 目录结构时，只导入该数据集 `images/` 或 `train/images/`、`val/images/`、`test/images/` 下的图片及其标注，跳过目录外的训练图表和预览图。`images/` 中没有标签的图片也会保留。普通图片和 Labelme 数据集仍递归导入全部图片。
+
 服务器部署时设置 `.env` 的 `LABEL_IMPORT_DIR=/data/migrate`，重新创建 web 容器后，在「服务器路径」直接填 `/data/migrate/datasetmix`，与服务器路径一致；旧的 `/imports/datasetmix` 仍可使用。默认复制模式下两个入口只读挂载同一源目录。启用下述同盘移动模式后，服务器原路径允许移动，旧 `/imports` 仍作为只读别名兼容。也可以本地选择整个数据集文件夹，或者上传压缩包。复制模式保留原始图片和标注；同名图片导入后自动改名，并同步更新标注对应关系。标注 JSON 的 `imageData` 固定为空，不嵌入 Base64 图片；图片作为单独文件保存。旧标注在读取、保存或导出时也会清空内嵌图片内容。
 
 ### 推理内存管理

@@ -12,6 +12,41 @@ from PIL import Image
 from annotation_utils import normalize_rectangles
 
 EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+YOLO_METADATA = {'data.yaml', 'data.yml', 'dataset.yaml', 'dataset.yml', 'classes.txt', 'obj.names'}
+YOLO_SPLITS = {'train', 'val', 'valid', 'validation', 'test'}
+
+
+def select_dataset_images(files, boundary):
+    """Filter only within recognized YOLO dataset roots, including split layouts."""
+    images = [p for p in files if p.suffix.lower() in EXTS]
+    paths = set(files)
+    metadata = {p.parent for p in files if p.name.lower() in YOLO_METADATA}
+    label_dirs = {parent for p in files if p.suffix.lower() == '.txt' and p.name.lower() != 'classes.txt'
+                  for parent in p.parents if parent.name.lower() == 'labels'}
+    roots, metadata_roots, labelme_roots = set(), set(), set()
+    for p in images:
+        image_dir = next((d for d in p.parents if d != boundary and boundary in d.parents
+                          and d.name.lower() == 'images'), None)
+        if image_dir is None:
+            continue
+        parent = image_dir.parent
+        root = parent.parent if parent.name.lower() in YOLO_SPLITS and parent != boundary else parent
+        if p.with_suffix('.json') in paths:
+            labelme_roots.add(root)
+        if parent / 'labels' in label_dirs or (p.stem.lower() != 'classes' and p.with_suffix('.txt') in paths):
+            roots.add(root)
+        if parent in metadata or root in metadata:
+            metadata_roots.add(root)
+    roots.update(metadata_roots - labelme_roots)
+    def included(p):
+        root = next((parent for parent in p.parents if parent in roots), None)
+        if root is None:
+            return True
+        parts = [part.lower() for part in p.relative_to(root).parts[:-1]]
+        return bool(parts and (parts[0] == 'images'
+                               or (len(parts) > 1 and parts[0] in YOLO_SPLITS and parts[1] == 'images')))
+
+    return [p for p in images if included(p)]
 
 
 def class_names(root):
@@ -124,8 +159,10 @@ def import_tree(source, project, cap=20000, progress=None, transfer='copy'):
         raise ValueError('移动导入必须在同一个文件系统内；不会退回到慢速复制')
     if progress:
         progress(phase='scanning', processed=0, total=0, count=0, skipped=0, shapes=0)
-    images = [source] if source.is_file() else sorted(source.rglob('*'))
-    images = [p for p in images if p.is_file() and p.suffix.lower() in EXTS and '__MACOSX' not in p.parts
+    files = [source] if source.is_file() else sorted(source.rglob('*'))
+    files = [p for p in files if '__MACOSX' not in p.parts and p.is_file()]
+    images = select_dataset_images(files, boundary) if source.is_dir() else files
+    images = [p for p in images if p.suffix.lower() in EXTS
               and images_root != p.parent.resolve() and images_root not in p.resolve().parents]
     total = min(len(images), cap)
     processed = 0

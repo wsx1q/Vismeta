@@ -51,6 +51,22 @@ class DatasetImportTest(unittest.TestCase):
         self.assertEqual(docs['b.jpg']['shapes'][0]['points'], [[0, 0], [200, 0], [200, 100]])
         self.assertEqual(docs['b.jpg']['shapes'][0]['label'], 'person')
 
+    def test_yolo_filters_only_its_own_non_image_directories(self):
+        for name in ('yolo/train/images/a.jpg', 'yolo/val/images/background.jpg',
+                     'yolo/results.png', 'yolo/runs/images/preview.jpg',
+                     'labelme/images/b.jpg', 'labelme/images/negative.jpg', 'labelme/extra.jpg', 'loose.jpg'):
+            self.image(name)
+        self.text('yolo/train/labels/a.txt', '0 .5 .5 .2 .2')
+        self.text('yolo/data.yaml', 'names: [car]')
+        self.text('labelme/images/b.json', '{"shapes": []}')
+        self.text('labelme/classes.txt', 'car')
+        result = import_tree(self.src, self.project, transfer='move')
+        self.assertEqual((result['count'], result['annotated']), (6, 1))
+        self.assertEqual({p.name for p in Path(self.project['images']).iterdir()},
+                         {'a.jpg', 'background.jpg', 'b.jpg', 'negative.jpg', 'extra.jpg', 'loose.jpg'})
+        self.assertTrue((self.src / 'yolo/results.png').exists())
+        self.assertTrue((self.src / 'yolo/runs/images/preview.jpg').exists())
+
     def test_missing_class_table_and_invalid_coords_do_not_import_unlabeled(self):
         self.image('a.jpg'); self.text('a.txt', '0 0.5 0.5 0.2 0.2')
         with self.assertRaisesRegex(ValueError, '导入前检查未通过'):
@@ -82,12 +98,14 @@ class DatasetImportTest(unittest.TestCase):
         archive = self.root / 'data.zip'
         with zipfile.ZipFile(archive, 'w') as arc:
             arc.writestr('dataset/images/train/a.jpg', image.getvalue())
+            arc.writestr('dataset/confusion_matrix.png', image.getvalue())
             arc.writestr('dataset/labels/train/a.txt', '0 .5 .5 .2 .2')
             arc.writestr('dataset/data.yaml', 'names: {0: car}')
             arc.writestr('../escape.txt', 'bad')
         extract_archive(archive, self.src)
         self.assertFalse((self.root / 'escape.txt').exists())
-        self.assertEqual(import_tree(self.src, self.project)['annotated'], 1)
+        result = import_tree(self.src, self.project)
+        self.assertEqual((result['count'], result['annotated']), (1, 1))
 
     def test_parallel_copy_is_bounded_and_same_stems_remain_unique(self):
         for i in range(24):
