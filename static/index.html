@@ -323,7 +323,7 @@
         <button type="button" data-mode="hand-poly" title="手画多边形">多边形</button>
         <button type="button" data-mode="pan" title="H">移动</button>
       </span>
-      <button type="button" id="review-mode" aria-pressed="false" title="只显示当前标注框，←/→ 切换框">审核模式</button>
+      <button type="button" id="review-mode" aria-pressed="false" title="显示当前框及与它重叠的框，←/→ 切换框">审核模式</button>
       <span class="pick" id="model-pick">
         <button type="button" class="caret" id="model" value="">模型</button>
         <ul class="pick-menu" hidden></ul>
@@ -1724,14 +1724,23 @@ function shapeTop(shape) {
   const xs = shape.points.map(p => p[0]), ys = shape.points.map(p => p[1]);
   return [sx(Math.min(...xs)), sy(Math.min(...ys))];
 }
-function shapeVisible(shape) {
-  return !reviewMode || shape.id === selectedShapeId;
+function reviewRect() {
+  const shape = reviewMode ? selectedShape() : null;
+  return shape?.shape_type === "rectangle" && shape.points.length >= 2 ? rectOf(shape) : null;
+}
+function shapeVisible(shape, focus) {
+  if (!reviewMode || shape.id === selectedShapeId) return true;
+  if (!focus || shape.shape_type !== "rectangle" || shape.points.length < 2) return false;
+  const box = rectOf(shape);
+  return Math.min(box.x2, focus.x2) > Math.max(box.x1, focus.x1)
+    && Math.min(box.y2, focus.y2) > Math.max(box.y1, focus.y1);
 }
 function draw() {
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   if (!photo.naturalWidth) return;
+  const focus = reviewRect();
   for (const shape of saved) {
-    if (!shapeVisible(shape)) continue;
+    if (!shapeVisible(shape, focus)) continue;
     const mode = highlightOf(shape);
     const base = labelColor(shape.label);
     if (mode === "shape") drawShape(shape, "#ffdf5d", "rgba(255,223,93,.4)", 3);
@@ -1857,9 +1866,10 @@ function closestEdge(shape, x, y) {
 }
 function shapeAt(x, y) {
   const tol = hitPx();
+  const focus = reviewRect();
   for (let i = saved.length - 1; i >= 0; i--) {
     const shape = saved[i];
-    if (!shapeVisible(shape)) continue;
+    if (!shapeVisible(shape, focus)) continue;
     if (shape.shape_type === "rectangle") {
       const r = rectOf(shape);
       if (x >= r.x1 - tol && x <= r.x2 + tol && y >= r.y1 - tol && y <= r.y2 + tol) return shape;
