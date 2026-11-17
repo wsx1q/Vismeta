@@ -629,6 +629,7 @@ let reviewMode = false;
 let reviewView = "overview", reviewSaving = false;
 let reviewChecked = new Set();
 let reviewSignatures = new Map();
+let reviewOrder = [];
 let selectedVertex = null;
 let editDrag = null;
 let pendingSelect = null;
@@ -1087,12 +1088,37 @@ function selectShape(id) {
 }
 function reviewQueue() {
   const boxes = saved.filter(s => s.shape_type === "rectangle" && s.points.length >= 2);
-  const signatures = new Map(boxes.map(s => [s.id, JSON.stringify([s.label, s.points])]));
+  const byId = new Map(boxes.map(shape => [shape.id, shape]));
+  const signatures = new Map(boxes.map(shape => [shape.id, {label: shape.label, points: JSON.stringify(shape.points)}]));
+  const samePositions = boxes.every(({id}) => signatures.get(id).points === reviewSignatures.get(id)?.points);
   for (const id of reviewChecked) {
-    if (!signatures.has(id) || signatures.get(id) !== reviewSignatures.get(id)) reviewChecked.delete(id);
+    const before = reviewSignatures.get(id), after = signatures.get(id);
+    if (!before || !after || after.label !== before.label || after.points !== before.points) reviewChecked.delete(id);
   }
   reviewSignatures = signatures;
-  return boxes;
+  // Keep the remaining boxes in order when deleting a box that started a row.
+  if (samePositions) {
+    reviewOrder = reviewOrder.filter(id => byId.has(id));
+    return reviewOrder.map(id => byId.get(id));
+  }
+  const positions = boxes.map(shape => {
+    const {x1, y1, x2, y2} = rectOf(shape);
+    return {shape, x: (x1 + x2) / 2, y: (y1 + y2) / 2, height: y2 - y1};
+  }).sort((a, b) => a.y - b.y || a.x - b.x);
+  const rows = [];
+  let row = [];
+  for (const box of positions) {
+    const first = row[0];
+    // Compare with the first box so a row cannot drift down the image.
+    if (!first || box.y - first.y > Math.min(first.height, box.height) / 2) {
+      row = [];
+      rows.push(row);
+    }
+    row.push(box);
+  }
+  const queue = rows.flatMap(row => row.sort((a, b) => a.x - b.x).map(box => box.shape));
+  reviewOrder = queue.map(shape => shape.id);
+  return queue;
 }
 function refreshReview() {
   const queue = reviewMode ? reviewQueue() : [];
@@ -1150,6 +1176,8 @@ $("review-mode").onclick = () => {
   button.setAttribute("aria-pressed", String(reviewMode));
   button.classList.toggle("on", reviewMode);
   setReviewView("overview");
+  const first = reviewMode && !$("stage").hidden && reviewQueue()[0];
+  if (first) { selectShape(first.id); return; }
   renderShapes();
   draw();
 };
@@ -1174,15 +1202,24 @@ function finishEditShape(id, raw) {
 function deleteShape(id) {
   const pos = saved.findIndex(item => item.id === id);
   if (pos < 0 || saved[pos].locked) return;
+  const selected = selectedShapeId === id;
+  let nextBox;
+  if (reviewMode && selected && saved[pos].shape_type === "rectangle") {
+    const queue = reviewQueue();
+    const current = queue.findIndex(shape => shape.id === id);
+    if (current >= 0) nextBox = queue[current + 1] || queue[current - 1];
+  }
   const [shape] = saved.splice(pos, 1);
   history.push({type: "delete", shape});
-  if (selectedShapeId === id) {
+  setStatus("已删除");
+  if (nextBox && focusReviewBox(nextBox.id)) return;
+  if (selected) {
     selectedShapeId = null;
     selectedVertex = null;
+    if (reviewMode && reviewView === "focus") setReviewView("overview");
   }
   renderShapes();
   draw();
-  setStatus("已删除");
 }
 
 // ---------- 图片列表 ----------
@@ -1765,7 +1802,9 @@ async function openAt(i) {
   $("stage").hidden = false;
   if (reviewMode) {
     item.reviewed = ann.flags?.cv_reviewed === true;
-    refreshReview();
+    const first = reviewQueue()[0];
+    if (first) selectShape(first.id);
+    else refreshReview();
   }
   layout();
   toastCenter("");
@@ -1862,11 +1901,13 @@ function draw() {
   if (reviewMode && reviewView === "raw") return;
   const overview = reviewMode && reviewView === "overview";
   const focus = reviewRect();
-  for (const shape of saved) {
+  const selected = reviewMode ? selectedShape() : null;
+  const shapes = selected ? [...saved.filter(shape => shape !== selected), selected] : saved;
+  for (const shape of shapes) {
     if (!shapeVisible(shape, focus)) continue;
     const mode = highlightOf(shape);
     const base = labelColor(shape.label);
-    if (overview) { drawShape(shape, base, "transparent", 1.15); continue; }
+    if (overview && mode !== "shape") { drawShape(shape, base, "transparent", 1.15); continue; }
     if (reviewMode && mode !== "shape") { drawShape(shape, hexA(base, .45), "transparent", 1.15); continue; }
     if (mode === "shape") drawShape(shape, "#ffdf5d", "rgba(255,223,93,.4)", 3);
     else if (mode === "label") drawShape(shape, base, hexA(base, .38), 3);
