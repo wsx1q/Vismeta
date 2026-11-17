@@ -11,7 +11,7 @@ let annotationResolve;
 const sandbox = {console, clearTimeout, $:el,
   photo:{style:{width:'310px',height:'760px'},naturalWidth:105,removeAttribute(name){delete this[name];}},
   stageWrap:{scrollLeft:30,scrollTop:20},overlay:{width:310,height:760},
-  imageLoadSeq:0,index:0,projectId:'old',items:[{name:'old.jpg'}],busy:false,
+  imageLoadSeq:0,index:0,projectId:'old',items:[{name:'old.jpg'}],busy:false,reviewMode:false,reviewSaving:false,
   points:[],saved:[],listEl:{children:[]},promptTimer:null,
   draw(){},renderShapes(){},setTexts(){},hydrate:x=>x,shapesKey:()=> '[]',ensureLabel:()=>false,persistLabels(){},updateImageActions(){},
   toastCenter(t){sandbox.toast=t;},setStatus(t){sandbox.status=t;},leaveCurrent:async()=>true,

@@ -125,6 +125,7 @@ def scan_annotations(ann_root):
         found[path.stem] = {
             "labeled": bool(data.get("shapes")),
             "text": texts.text_status(data),
+            "reviewed": (data.get("flags") or {}).get("cv_reviewed") is True,
         }
     return found
 
@@ -550,7 +551,8 @@ def images():
         "done": sum(1 for _, state in names if state["labeled"]),
         "focus": focus_index,
         "texts": counts,
-        "items": [{"name": p.name, "saved": state["labeled"], "text": state["text"]} for p, state in page],
+        "items": [{"name": p.name, "saved": state["labeled"], "text": state["text"],
+                   "reviewed": state.get("reviewed", False)} for p, state in page],
     })
 
 
@@ -740,9 +742,18 @@ def save():
             })
     target = ann_path(path)
     old = read_doc(target) if target.is_file() else None
+    flags = dict((old or {}).get("flags") or {})
+    def geometry(rows):
+        return [(s.get("label"), s.get("shape_type"), s.get("points")) for s in rows]
+    old_shapes = (old or {}).get("shapes") or []
+    geometry_changed = geometry(shapes) != geometry(old_shapes)
+    if body.get("reviewed") is True:
+        flags["cv_reviewed"] = True
+    elif geometry_changed:
+        flags.pop("cv_reviewed", None)
     document = {
         "version": "2.4.0",
-        "flags": {},
+        "flags": flags,
         "shapes": shapes,
         "imagePath": path.name,
         "imageData": None,
@@ -751,9 +762,14 @@ def save():
     }
     if old and old.get("texts"):
         document["texts"] = old["texts"]
+    if old and not geometry_changed:
+        def locks(rows):
+            return [bool(s.get("locked") or (s.get("flags") or {}).get("locked")) for s in rows]
+        if locks(shapes) == locks(old_shapes):
+            document = {**old, "flags": flags}
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
-    return jsonify({"saved": str(target), "count": len(shapes)})
+    return jsonify({"saved": str(target), "count": len(shapes), "reviewed": flags.get("cv_reviewed") is True})
 
 
 @app.post("/api/texts/save")

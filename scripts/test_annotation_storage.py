@@ -12,6 +12,34 @@ import server
 
 
 class AnnotationStorageTest(unittest.TestCase):
+    def test_image_review_persists_and_geometry_changes_invalidate_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.multiple(server, DATA_ROOT=root, PROJECTS_DIR=root / 'projects', PROJECTS_FILE=root / 'projects.json'):
+                client = server.app.test_client()
+                pid = client.post('/api/projects', json={'name': 'review check'}).get_json()['id']
+                headers = {'X-Project': pid}
+                project = server.find_project(pid)
+                Image.new('RGB', (200, 100)).save(Path(project['images']) / 'test.jpg')
+                shape = {'label': 'car', 'shape_type': 'rectangle', 'points': [[10, 10], [20, 20]]}
+                def save(**options):
+                    return client.post('/api/save', headers=headers,
+                                       json={'name': 'test.jpg', 'shapes': [shape], **options}).get_json()['reviewed']
+                self.assertFalse(save())
+                annotation = Path(project['annotations']) / 'test.json'
+                doc = json.loads(annotation.read_text(encoding='utf-8'))
+                doc['shapes'][0]['score'] = 0.91
+                annotation.write_text(json.dumps(doc), encoding='utf-8')
+                self.assertTrue(save(reviewed=True))
+                self.assertEqual(json.loads(annotation.read_text(encoding='utf-8'))['shapes'][0]['score'], 0.91)
+                self.assertTrue(save(), 'an unchanged save should keep the image approved')
+                self.assertTrue(client.get('/api/images', headers=headers).get_json()['items'][0]['reviewed'])
+                client.post('/api/texts/save', headers=headers, json={'name': 'test.jpg', 'items': []})
+                self.assertTrue(client.get('/api/annotation/test.jpg', headers=headers).get_json()['flags']['cv_reviewed'])
+                shape['points'][1][1] = 30
+                self.assertFalse(save())
+                self.assertFalse(client.get('/api/images', headers=headers).get_json()['items'][0]['reviewed'])
+
     def test_labelme_import_normalizes_four_corners_without_changing_source(self):
         from dataset_import import import_tree
         with tempfile.TemporaryDirectory() as tmp:
