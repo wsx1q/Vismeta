@@ -323,6 +323,7 @@
         <button type="button" data-mode="hand-poly" title="手画多边形">多边形</button>
         <button type="button" data-mode="pan" title="H">移动</button>
       </span>
+      <button type="button" id="review-mode" aria-pressed="false" title="开启后选中第一个框，←/→ 切换框">审核模式</button>
       <span class="pick" id="model-pick">
         <button type="button" class="caret" id="model" value="">模型</button>
         <ul class="pick-menu" hidden></ul>
@@ -613,6 +614,7 @@ let savedSnapshot = "[]";
 let labels = [];
 let selectedLabel = "目标";
 let selectedShapeId = null;
+let reviewMode = false;
 let selectedVertex = null;
 let editDrag = null;
 let pendingSelect = null;
@@ -1062,6 +1064,23 @@ function selectShape(id) {
   renderShapes();
   draw();
 }
+function reviewBox(step = 0) {
+  if ($("stage").hidden) return;
+  const boxes = saved.filter(shape => shape.shape_type === "rectangle");
+  if (!boxes.length) return;
+  const current = boxes.findIndex(shape => shape.id === selectedShapeId);
+  const target = !step || current < 0 ? 0 : current + step;
+  if (target < 0 || target >= boxes.length) return;
+  selectShape(boxes[target].id);
+  shapeListEl.querySelector(".lab.on")?.scrollIntoView({block: "nearest"});
+}
+$("review-mode").onclick = () => {
+  reviewMode = !reviewMode;
+  const button = $("review-mode");
+  button.setAttribute("aria-pressed", String(reviewMode));
+  button.classList.toggle("on", reviewMode);
+  if (reviewMode) reviewBox();
+};
 function finishEditShape(id, raw) {
   if (editingShapeId !== id) return;
   editingShapeId = null;
@@ -1626,6 +1645,7 @@ async function openAt(i) {
   }
   if (ticket !== imageLoadSeq || projectId !== imageProject || index !== i) return;
   $("stage").hidden = false;
+  if (reviewMode) reviewBox();
   layout();
   toastCenter("");
   store("label-place:" + projectId, item.name);
@@ -2337,6 +2357,12 @@ window.addEventListener("keydown", event => {
     return;
   }
   if (event.ctrlKey || event.metaKey || event.altKey) return;
+  if (reviewMode && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+    if ($("stage").hidden || polyDraft.length) return;
+    event.preventDefault();
+    reviewBox(event.key === "ArrowLeft" ? -1 : 1);
+    return;
+  }
   const key = event.key.toLowerCase();
   const actions = {
     h: () => setMode(promptMode() === "pan" ? modeBeforePan : "pan"),
